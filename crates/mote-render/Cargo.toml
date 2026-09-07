@@ -1,0 +1,9 @@
+[package]
+name = "mote-render"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mote-core = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
