@@ -69,7 +69,7 @@ fn main() {
         SelectObject(mem_dc, dib.into());
         // Solid opaque red.
         let px = std::slice::from_raw_parts_mut(bits as *mut u8, 256 * 256 * 4);
-        for p in px.chunks_exact_mut(4) {
+        for p in px.as_chunks_mut::<4>().0 {
             p[0] = 0;
             p[1] = 0;
             p[2] = 255;
