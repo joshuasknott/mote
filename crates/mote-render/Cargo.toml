@@ -7,3 +7,5 @@ edition.workspace = true
 mote-core = { workspace = true }
 log = { workspace = true }
 serde = { workspace = true }
+tiny-skia = "0.11"
+svgtypes = "0.15"

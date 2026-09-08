@@ -206,9 +206,11 @@ mod tests {
 
     #[test]
     fn roundtrip_json() {
-        let mut s = Settings::default();
-        s.species = mote_core::SpeciesId::Sprout;
-        s.mote_count = 3;
+        let s = Settings {
+            species: mote_core::SpeciesId::Sprout,
+            mote_count: 3,
+            ..Default::default()
+        };
         let text = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(back.size, CreatureSize::Medium);

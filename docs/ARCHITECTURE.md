@@ -14,7 +14,7 @@ raw Win32**:
   webview shell they would be harder, not easier.
 - Idle cost today: one 16 ms timer, a software raster of 65k pixels at
   30 fps awake / 7 fps asleep, `EnumWindows` only on WinEvent notification
-  (+2 s fallback). Measured ~15 MB RSS. A game engine would add nothing: the
+  (+2 s fallback). Current whole-app RSS needs a new soak measurement. The
   "physics" is a 2D platformer-lite (gravity, supports, jump arcs) in ~300
   lines.
 
@@ -44,9 +44,10 @@ mote-core     no OS calls; deterministic; unit-tested
   ├── behaviour.rs Brain: utility-weighted state machine + cooldowns
   ├── personality.rs drives + traits (no obligations, never dies)
   └── lib.rs       CreatureSim::tick — the per-creature step
-mote-render   asset-agnostic animation backend (procedural today)
+mote-render   pose-driven illustrated vector backend
   ├── anim.rs      Animator: squash spring, blinks, saccades, walk/dance phase
-  └── creature.rs  software raster → premultiplied RGBA sprite
+  ├── creature.rs  shared Pose contract and render regression tests
+  └── art.rs       cached cubic art + pigment grain → premultiplied RGBA
 ```
 
 ## Key flows
@@ -82,9 +83,21 @@ no-flap behaviour budgets, render premultiplication invariants, and sensor
 math (CPU ratio, cursor smoothing, audio hysteresis). OS-touching tests only
 assert crash-freedom and sanity on live Windows.
 
-## Multi-Mote future
+## Artwork and interaction
 
-`CreatureSim` is already per-creature state stepped against a shared
-`&WorldSnapshot`; `tick()` takes `&mut self` with no globals. A future
-version can hold `Vec<CreatureSim>`, add inter-creature senses to
-`SenseInput`, and share supports — no architectural change needed.
+`art.rs` owns twelve authored path designs plus the Ring-tail nap drawing.
+Paths and pigment grain are cached with `OnceLock`. tiny-skia rasterizes into
+premultiplied RGBA, retaining the existing Win32 DIB upload boundary. Pose
+transforms pivot around the feet at sprite y=206, with a canvas-fit guard for
+large stretched silhouettes. Grain follows art coordinates rather than time.
+
+The app retains each last presented frame and its screen origin for alpha
+hit testing. This makes irregular limbs clickable while holes and empty
+space pass through. Captured drags remain interactive outside the silhouette.
+
+## Multiple Motes
+
+The app holds a collection of per-creature simulations, animators and native
+overlays, stepped against one shared `WorldSnapshot`. The tray selects one
+to four instances; cohort species and cohabitation gaze have regression tests.
+Richer social choreography remains future work.

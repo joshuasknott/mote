@@ -1,61 +1,73 @@
-# Build plan — implemented vs remaining
+# Build plan — implemented, verified, and remaining
 
-Claims here are exact: anything listed as done was observed running on
-Windows 11 (screenshots + behaviour log), not merely compiled.
+## Character and interaction pass (8 September 2026)
 
-## Done (vertical slice, all verified live)
+Implemented in the application:
 
-- [x] Transparent overlay (`WS_EX_LAYERED`, per-pixel alpha, no focus steal,
-      no taskbar/Alt-Tab presence, click-through except on the body via
-      `WM_NCHITTEST`)
-- [x] Desktop/taskbar geometry (virtual screen, per-monitor DPI, taskbar
-      edge/rect/auto-hide, `TaskbarCreated`/Explorer-restart handling)
-- [x] Physics (gravity, swept landing, support riding, support loss, edge
-      falls, jump arcs, throws, out-of-world recovery) — 18 core tests
-- [x] Window detection + standing on windows (filtered `EnumWindows`, DWM
-      cloak, minimised exclusion, shell-chrome exclusion)
-- [x] Jumping between windows (capability-checked targeting, anticipation/
-      landing squash via spring)
-- [x] Behaviour system (23-state utility machine, drives, personality,
-      cooldowns, min durations; coherent multi-minute behaviour log)
-- [x] Cursor interaction (gaze, startle on fast approach, chase, avoid,
-      click-to-pet, drag-and-throw with trail velocity)
-- [x] Idle/sleep (screensaver-grade idle source, sleep/wake poses, wake on return)
-- [x] CPU/Memory reactions (Task-Manager-grade CPU deltas, wilt state)
-- [x] Music reaction (peak-meter loudness, VU smoothing, playback hysteresis,
-      bob + dance; zero audio capture by construction)
-- [x] Tray icon (procedurally rendered) + full settings menu, persistence,
-      launch-at-startup via HKCU Run key
-- [x] Single instance, file logging with panic hook, `--self-test` smoke test
-- [x] Suspend/resume, display-change rebuild, fullscreen-game auto-pause,
-      DPI-awareness (PerMonitorV2)
-- [x] CI (fmt/clippy/test/build), 49 tests, zero clippy warnings
+- Twelve individually authored cubic silhouettes replace the ellipse/triangle
+  renderer: bent horns, continuous curls, floppy ears, a real ring opening,
+  draped arms, and Kaiju dorsal plates and tail.
+- Muted vision-board colours, ink contours, asymmetric eyes and brows,
+  curved mouths and paws, irregular flank markings, and cached pigment grain.
+- Foot-anchored squash/stretch, whole-body tilt, articulated steps, antenna
+  sway (disabled by reduce motion), peeking fingers and climbing grips.
+- Ring-tail has a separate curled nap drawing; other species use compressed
+  sleeping poses. Entering/leaving the Ring-tail drawing still needs a morph.
+- Oversized/stretching silhouettes fit the native canvas without cutting off
+  horns. All three size settings have automated boundary coverage.
+- Hit testing uses the last presented frame's alpha, including holes and
+  negative monitor coordinates, instead of an invisible circular target.
+- Reproducible runtime gallery, pose sheet, size sheet and renderer timing:
+  `cargo run --release -p mote-render --example gallery`.
 
-## Remaining / known gaps (honest list)
+Verification in this pass:
 
-1. **Wall-climbing animation** — `Climbing`/`Dangling` states exist and the
-   brain can enter jump arcs to high ledges, but vertical wall-crawling with
-   cling poses is simplified to a scramble-hop. Needs grip points + cling art.
-2. **SMTC integration** — exact play/pause metadata from
-   `Windows.Media.Control` is not wired; playback is inferred from sustained
-   output levels (covers music/video/games uniformly, but can't distinguish
-   them or read track state).
-3. **Rich settings window** — tray menu covers all nine settings; a polished
-   graphical panel is future work, not a gap in function.
-4. **Multi-monitor soak** — virtual-screen model + per-monitor DPI are
-   implemented and unit-covered, but long multi-monitor dogfooding (unplug
-   during sleep, mixed-DPI drags) is still pending.
-5. **Installer/packaging** — no MSIX/Inno installer yet; run the exe or
-   `cargo install --path crates/mote-app`. Icon for the exe (vs tray) pending.
-6. **Sprite art pass** — procedural renderer is deliberately swappable
-   (`Animator`/`Pose` are asset-agnostic); final hand-drawn frames can drop in
-   without touching sim or overlay code.
-7. **Multiple Motes** — architecture is ready (`CreatureSim` is per-creature,
-   world is shared); interaction senses + spawning UI not built.
-8. **Reduced test coverage for overlay/tray** — message-loop code is verified
-   live, not by unit tests (headless Win32 UI tests are brittle by nature).
+- Windows workspace tests, format check and strict Clippy; release build.
+- Native `mote.exe --self-test`: sensors, simulation, twelve renders and pack
+  initialization pass. Its pose checks are render smoke checks, not proof of
+  every autonomous behaviour on the desktop.
+- Observed the new Climber on a real window edge in the Windows overlay.
+- Inspected all twelve drawings on light/dark backgrounds and all three sizes.
+- Release renderer measured approximately 0.8 ms/frame across 240 warm,
+  mixed-species frames on this machine. This excludes sensing, simulation and
+  native presentation; it is not a whole-app CPU or battery benchmark.
 
-## Deliberately out of scope (product principles)
+## Existing capabilities
 
-Chat, LLMs, voice, notes/reminders, accounts, telemetry/analytics, network
-access of any kind, Tamagotchi-style needs, dashboard-style settings app.
+These are present in source and covered by the current tests where practical;
+this pass did not repeat every historical live acceptance check.
+
+- Native transparent, non-activating layered overlays and tray controls.
+- Desktop/taskbar/window geometry; gravity, swept landings, moving support
+  riding/loss, window jumps and vertical wall climbing.
+- Species personalities, drives, cooldowns, coherent behaviour selection,
+  cursor gaze/startle/chase, petting, drag/throw, idle sleep and wake.
+- Local CPU/memory sensing and output peak-meter music reaction; no recording.
+- Settings persistence, startup option, single-instance guard, local logging,
+  suspend/resume and fullscreen pause handling.
+- One to four Motes with selectable species and shared world geometry.
+- Windows CI runs format, Clippy, tests, native smoke and release build.
+
+## Next improvements, in priority order
+
+1. **Animation choreography:** richer species-specific walks, climb hand-over-
+   hand cycles, distinct jump/landing poses, and smooth curled-sleep transitions.
+   The current illustrations are animated vectors, not a full frame-by-frame
+   hand-painted animation set.
+2. **Desktop acceptance:** moving/minimising a climbed window, Explorer restart,
+   lock/resume, autohide taskbars, and a four-pet soak with CPU/RSS measurements.
+3. **Multi-monitor acceptance:** mixed DPI, negative coordinates, unplug/replug,
+   and dragging between monitors. Unit coverage is not a substitute for hardware.
+4. **Media state:** integrate SMTC for actual play/pause; the present output
+   meter also responds to video and games and cannot identify music.
+5. **Packaging:** installer and executable icon, signing/release workflow and
+   install/uninstall checks. A release executable is available from Cargo.
+6. **Social behaviour:** existing cohabitation/gaze is a starting point; richer
+   shared play, resting together and collision avoidance remain.
+7. **Settings polish:** a small optional native panel if the tray becomes
+   cumbersome. Keep the creature as the product.
+
+## Out of scope
+
+Chat, LLMs, voice, notes/reminders, accounts, telemetry, network access,
+Tamagotchi obligations, and dashboard-style settings.

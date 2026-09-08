@@ -341,8 +341,6 @@ impl Animator {
             tilt = 0.0;
         } else if is_climbing {
             tilt = if inp.facing > 0 { -0.22 } else { 0.22 };
-        } else if is_napping {
-            hop = 10.0;
         }
         // Startle shake.
         if matches!(inp.state, BehaviourState::Startled) && self.startle_age < 0.6 {
@@ -403,7 +401,11 @@ impl Animator {
             lean,
             step_phase,
             step_amp,
-            ear_phase: self.ear_phase as f32,
+            ear_phase: if inp.reduce_motion {
+                0.0
+            } else {
+                self.ear_phase as f32
+            },
             sleep_amount: self.sleep_amt,
             blush: self.blush,
             wilt: if matches!(inp.state, BehaviourState::ReactLoad) {

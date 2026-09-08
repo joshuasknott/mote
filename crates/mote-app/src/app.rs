@@ -45,6 +45,9 @@ pub struct MoteInstance {
     pub pet_blush: f32,
     pub land_impulse: f32,
     pub last_state: BehaviourState,
+    /// Pixels and origin of the last presented frame, used for precise hit testing.
+    pub presented_frame: Vec<u8>,
+    pub presented_origin: (i32, i32),
 }
 
 pub struct DragState {
@@ -136,6 +139,8 @@ impl App {
                 pet_blush: 0.0,
                 land_impulse: 0.0,
                 last_state: BehaviourState::Idle,
+                presented_frame: Vec::new(),
+                presented_origin: (0, 0),
             });
         }
 
@@ -237,6 +242,8 @@ impl App {
                     pet_blush: 0.0,
                     land_impulse: 0.0,
                     last_state: BehaviourState::Idle,
+                    presented_frame: Vec::new(),
+                    presented_origin: (0, 0),
                 });
             }
         }
@@ -541,6 +548,10 @@ impl App {
                         - OVERLAY_PX as f32 / 2.0
                         - mote_render::FEET_BELOW_CENTER * s) as i32;
                     o.present(wx, wy);
+                    if !o.present_failed() {
+                        inst.presented_origin = (wx, wy);
+                        inst.presented_frame = frame;
+                    }
                     o.set_visible(true);
                     if o.present_failed() && self.tick_count.is_multiple_of(600) {
                         log::warn!("overlay present failing for mote {}", inst.id);
@@ -649,7 +660,6 @@ impl App {
     fn hit_test(&self, hwnd: HWND, lparam: LPARAM) -> LRESULT {
         let x = (lparam.0 & 0xFFFF) as i16 as i32;
         let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-        let s = self.settings.size.radius() / 64.0;
         if let Some(inst) = self
             .instances
             .iter()
@@ -662,11 +672,15 @@ impl App {
                 return LRESULT(HTTRANSPARENT as isize);
             }
 
-            let (bcx, bcy) = (inst.sim.body.pos.x, inst.sim.body.pos.y - 56.0 * s);
-            let dx = x as f32 - bcx;
-            let dy = y as f32 - bcy;
-            let r = self.settings.size.radius() * 1.05 + 10.0;
-            if inst.drag.is_some() || dx * dx + dy * dy < r * r {
+            let px = x - inst.presented_origin.0;
+            let py = y - inst.presented_origin.1;
+            let on_art = (0..OVERLAY_PX).contains(&px)
+                && (0..OVERLAY_PX).contains(&py)
+                && inst
+                    .presented_frame
+                    .get(((py * OVERLAY_PX + px) * 4 + 3) as usize)
+                    .is_some_and(|alpha| *alpha > 64);
+            if inst.drag.is_some() || on_art {
                 return LRESULT(HTCLIENT as isize);
             }
         }
@@ -1062,8 +1076,10 @@ mod tests {
 
     #[test]
     fn multi_mote_instance_count_sync() {
-        let mut s = Settings::default();
-        s.mote_count = 3;
+        let s = Settings {
+            mote_count: 3,
+            ..Default::default()
+        };
         let mut app = App::new(s);
         assert_eq!(app.instances.len(), 3);
         assert_eq!(app.instances[0].species, SpeciesId::Peeker);
@@ -1079,8 +1095,10 @@ mod tests {
 
     #[test]
     fn species_selection_updates_cohort() {
-        let mut s = Settings::default();
-        s.mote_count = 2;
+        let s = Settings {
+            mote_count: 2,
+            ..Default::default()
+        };
         let mut app = App::new(s);
         assert_eq!(app.instances[0].species, SpeciesId::Peeker);
 
@@ -1121,9 +1139,11 @@ mod tests {
 
     #[test]
     fn startup_pack_creates_unique_cohort_species() {
-        let mut s = Settings::default();
-        s.species = SpeciesId::RingTail; // index 9 (previously produced 9+3=12%12=0 bug)
-        s.mote_count = 4;
+        let s = Settings {
+            species: SpeciesId::RingTail,
+            mote_count: 4,
+            ..Default::default()
+        };
         let app = App::new(s);
         assert_eq!(app.instances.len(), 4);
         assert_eq!(app.instances[0].species, SpeciesId::RingTail);
@@ -1149,6 +1169,12 @@ mod tests {
         app.instances[0].overlay = Some(Overlay::dummy(hwnd));
         app.instances[0].sim.body.pos.x = 500.0;
         app.instances[0].sim.body.pos.y = 400.0;
+        app.instances[0].presented_origin = (372, 194);
+        app.instances[0].presented_frame = mote_render::draw_mote(&mote_render::creature::Pose {
+            is_peeking: true,
+            hop_px: 40.0,
+            ..Default::default()
+        });
         app.instances[0]
             .sim
             .brain
@@ -1166,6 +1192,24 @@ mod tests {
         let hit_above = app.hit_test(hwnd, lparam_above);
         assert_eq!(hit_above.0, HTCLIENT as isize);
 
+        let _ = app.instances[0].overlay.take().map(std::mem::forget);
+    }
+
+    #[test]
+    fn artwork_hit_testing_respects_ring_hole_on_negative_monitor_coordinates() {
+        let mut app = App::new(Settings::default());
+        let hwnd = HWND(0x1234 as *mut std::ffi::c_void);
+        let inst = &mut app.instances[0];
+        inst.overlay = Some(Overlay::dummy(hwnd));
+        inst.presented_origin = (-200, -200);
+        inst.presented_frame = mote_render::draw_mote(&mote_render::creature::Pose {
+            species: SpeciesId::RingTail,
+            ..Default::default()
+        });
+        let at = |x: i32, y: i32| LPARAM((((y as u16 as u32) << 16) | x as u16 as u32) as isize);
+        assert_eq!(app.hit_test(hwnd, at(-77, -127)).0, HTTRANSPARENT as isize);
+        assert_eq!(app.hit_test(hwnd, at(-77, -147)).0, HTCLIENT as isize);
+        assert_eq!(app.hit_test(hwnd, at(-210, -210)).0, HTTRANSPARENT as isize);
         let _ = app.instances[0].overlay.take().map(std::mem::forget);
     }
 }
