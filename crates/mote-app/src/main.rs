@@ -282,7 +282,12 @@ fn self_test() {
         };
         anim.update(0.016, &inp);
         let frame = mote_render::creature::draw_mote(&anim.pose(&inp));
-        let opaque = frame.chunks_exact(4).filter(|p| p[3] > 128).count();
+        let opaque = frame
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] > 128)
+            .count();
         if opaque < 1000 {
             println!(
                 "FAIL: species {:?} sprite nearly invisible ({opaque} px)",
@@ -303,7 +308,9 @@ fn self_test() {
     };
     let peek_frame = mote_render::creature::draw_mote(&peek_pose);
     let peek_bottom_opaque = peek_frame
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .skip(225 * mote_render::SPRITE_PX)
         .filter(|p| p[3] > 64)
         .count();
@@ -321,7 +328,14 @@ fn self_test() {
         ..Default::default()
     };
     let climb_frame = mote_render::creature::draw_mote(&climb_pose);
-    if climb_frame.chunks_exact(4).filter(|p| p[3] > 128).count() < 1000 {
+    if climb_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] > 128)
+        .count()
+        < 1000
+    {
         println!("FAIL: climbing frame did not render properly");
         ok = false;
     }
@@ -335,7 +349,14 @@ fn self_test() {
         ..Default::default()
     };
     let nap_frame = mote_render::creature::draw_mote(&nap_pose);
-    if nap_frame.chunks_exact(4).filter(|p| p[3] > 128).count() < 1000 {
+    if nap_frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] > 128)
+        .count()
+        < 1000
+    {
         println!("FAIL: curled napping frame did not render properly");
         ok = false;
     }

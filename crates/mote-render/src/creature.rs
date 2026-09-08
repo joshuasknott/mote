@@ -127,7 +127,12 @@ mod tests {
             };
             let buf = draw_mote(&p);
             assert_eq!(buf.len(), SPRITE_PX * SPRITE_PX * 4);
-            let opaque = buf.chunks_exact(4).filter(|px| px[3] > 128).count();
+            let opaque = buf
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|px| px[3] > 128)
+                .count();
             assert!(
                 opaque > 1000,
                 "Species {:?} produced too few opaque pixels: {}",
@@ -149,7 +154,7 @@ mod tests {
                 ..Pose::default()
             };
             let buf = draw_mote(&p);
-            for px in buf.chunks_exact(4) {
+            for px in buf.as_chunks::<4>().0 {
                 assert!(px[0] <= px[3], "R > A: {:?} on {:?}", px, species);
                 assert!(px[1] <= px[3], "G > A: {:?} on {:?}", px, species);
                 assert!(px[2] <= px[3], "B > A: {:?} on {:?}", px, species);
@@ -189,7 +194,12 @@ mod tests {
             ..Pose::default()
         };
         let buf = draw_mote(&p);
-        let opaque = buf.chunks_exact(4).filter(|px| px[3] > 128).count();
+        let opaque = buf
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|px| px[3] > 128)
+            .count();
         assert!(opaque > 1000);
     }
 
@@ -287,7 +297,9 @@ mod tests {
                 ..Default::default()
             });
             let lowest = frame
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .enumerate()
                 .filter(|(_, px)| px[3] > 128)
                 .map(|(i, _)| i / SPRITE_PX)

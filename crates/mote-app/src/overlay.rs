@@ -97,7 +97,12 @@ impl Overlay {
             let dst =
                 std::slice::from_raw_parts_mut(self.bits, (OVERLAY_PX * OVERLAY_PX * 4) as usize);
             // RGBA -> BGRA swap.
-            for (d, s) in dst.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+            for (d, s) in dst
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(rgba.as_chunks::<4>().0.iter())
+            {
                 d[0] = s[2];
                 d[1] = s[1];
                 d[2] = s[0];
@@ -108,10 +113,17 @@ impl Overlay {
         // (once). Catches stale/wrong `bits` pointers.
         static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !CHECKED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            let opaque_src = rgba.chunks_exact(4).filter(|p| p[3] > 128).count();
+            let opaque_src = rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[3] > 128)
+                .count();
             let opaque_dib = unsafe {
                 std::slice::from_raw_parts(self.bits, (OVERLAY_PX * OVERLAY_PX * 4) as usize)
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .filter(|p| p[3] > 128)
                     .count()
             };
