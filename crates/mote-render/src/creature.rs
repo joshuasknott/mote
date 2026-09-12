@@ -448,11 +448,13 @@ pub fn draw_mote(p: &Pose) -> Vec<u8> {
         let mut to = Pixmap::new(SPRITE_PX as u32, SPRITE_PX as u32).unwrap();
         draw_frame(&mut from, &atlas, &atlas.frames[first], p, 1.0, None);
         draw_frame(&mut to, &atlas, &atlas.frames[second], p, 1.0, None);
-        for (out, (a, b)) in dst
-            .data_mut()
-            .chunks_exact_mut(4)
-            .zip(from.data().chunks_exact(4).zip(to.data().chunks_exact(4)))
-        {
+        for (out, (a, b)) in dst.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(
+            from.data()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(to.data().as_chunks::<4>().0.iter()),
+        ) {
             for i in 0..4 {
                 out[i] = (a[i] as f32 + (b[i] as f32 - a[i] as f32) * blend).round() as u8;
             }
