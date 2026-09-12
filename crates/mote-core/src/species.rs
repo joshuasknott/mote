@@ -1,281 +1,282 @@
-//! Species registry: all 12 Mote archetypes from the vision board.
+//! The real animals available to Mote.
 //!
-//! Each species defines a distinct visual silhouette and procedural features
-//! (rendered in `mote-render`), paired with personality baseline traits
-//! (boldness, laziness, playfulness, music_love, skittishness) that drive
-//! its behaviour in `mote-core`.
+//! Species are deliberately a small, stable data contract. The renderer can
+//! use [`SpeciesId::asset_slug`] to find artwork while the simulation uses
+//! [`SpeciesId::motion`] to keep each animal's movement believable.
 
 use crate::personality::Personality;
 use serde::{Deserialize, Serialize};
 
-/// The 12 canonical Mote species from the vision board.
+/// The six real-animal Mote species.
+///
+/// The numeric values are the new stable ids. The aliases retain the names
+/// used by earlier settings files; serde maps those old archetypes to the
+/// closest real animal on load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(u8)]
 pub enum SpeciesId {
-    /// 01 The Peeker: Charcoal sphere, asymmetric horns, sly side-glance.
+    /// A curious, agile climber that alternates between quiet observation and
+    /// short bursts of play.
     #[default]
-    Peeker = 1,
-    /// 02 The Seedling: Warm cream teardrop, spiral curly antenna, dot eyes.
-    Seedling = 2,
-    /// 03 The Loaf: Terracotta slug, bulbous dorsal knob, sleepy half-lids.
-    Loaf = 3,
-    /// 04 The Gourd: Olive green tall body, floppy ear.
-    Gourd = 4,
-    /// 05 The Climber: Periwinkle bean, S-antenna, climbing limbs.
-    Climber = 5,
-    /// 06 The Heavy: Slate blue dome, floor-draping ear-arms.
-    Heavy = 6,
-    /// 07 The Peanut: Royal purple peanut body, stalk-bulb antenna.
-    Peanut = 7,
-    /// 08 The Bat / Pup: Cream & mottled brown, alert pointed ears, joyful paws.
-    Pup = 8,
-    /// 09 The Ring-tail: Amber round body, loop-handle antenna, curled ledge naps.
-    RingTail = 9,
-    /// 10 The Sprout: Moss green round body, triple-crest mushroom top.
-    Sprout = 10,
-    /// 11 The Shadow: Inky navy, sweeping scythe crest, wary gaze.
-    Shadow = 11,
-    /// 12 The Kaiju: Taupe quadruped, dorsal plates/spikes, peaceful eyes.
-    Kaiju = 12,
+    #[serde(alias = "Peeker", alias = "Shadow")]
+    Cat = 1,
+    /// A social, expressive runner with brief, playful pursuits.
+    #[serde(alias = "Pup", alias = "Gourd")]
+    Dog = 2,
+    /// A gentle, alert hopper that prefers open surfaces and safe landings.
+    #[serde(alias = "Seedling", alias = "Peanut")]
+    Rabbit = 3,
+    /// A nimble opportunist that can climb low window edges and nap in cover.
+    #[serde(alias = "RingTail", alias = "Climber")]
+    Fox = 4,
+    /// A watchful nocturnal bird whose grounded movement is a quiet hop.
+    #[serde(alias = "Heavy")]
+    Owl = 5,
+    /// A patient, low-profile wanderer. Tortoises do not voluntarily climb,
+    /// chase or jump.
+    #[serde(alias = "Loaf", alias = "Sprout", alias = "Kaiju")]
+    Tortoise = 6,
+}
+
+/// How an animal moves around the desktop. This is separate from art so
+/// behaviour and rendering can share grounded physical limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Locomotion {
+    /// Four-footed or feline walking, with an optional faster run.
+    Walk,
+    /// A two-footed hop between stable surfaces.
+    Hop,
+    /// A low, unhurried crawl.
+    Crawl,
+}
+
+/// Physical and behavioural movement traits for a species.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MotionTraits {
+    pub locomotion: Locomotion,
+    pub can_run: bool,
+    pub can_jump: bool,
+    pub can_climb: bool,
+    pub can_chase_cursor: bool,
+    /// Multiplier applied to the shared walk speed.
+    pub speed_scale: f32,
+    /// Multiplier applied to the shared jump impulse.
+    pub jump_scale: f32,
+    /// Voluntary horizontal reach for a hop or jump, in pixels.
+    pub jump_reach_px: f32,
+    /// Voluntary upward reach for a hop or jump, in pixels.
+    pub jump_height_px: f32,
 }
 
 impl SpeciesId {
-    /// All 12 species in canonical vision board order.
-    pub const ALL: [SpeciesId; 12] = [
-        SpeciesId::Peeker,
-        SpeciesId::Seedling,
-        SpeciesId::Loaf,
-        SpeciesId::Gourd,
-        SpeciesId::Climber,
-        SpeciesId::Heavy,
-        SpeciesId::Peanut,
-        SpeciesId::Pup,
-        SpeciesId::RingTail,
-        SpeciesId::Sprout,
-        SpeciesId::Shadow,
-        SpeciesId::Kaiju,
+    /// All six species in the order shown by the picker UI.
+    pub const ALL: [SpeciesId; 6] = [
+        SpeciesId::Cat,
+        SpeciesId::Dog,
+        SpeciesId::Rabbit,
+        SpeciesId::Fox,
+        SpeciesId::Owl,
+        SpeciesId::Tortoise,
     ];
 
     pub fn all() -> &'static [SpeciesId] {
         &Self::ALL
     }
 
-    /// 1-based index (1..=12).
+    /// Stable 1-based id.
     pub fn index(self) -> u8 {
         self as u8
     }
 
-    /// Zero-padded two-digit string ("01" .. "12").
+    /// Zero-padded picker id ("01" .. "06").
     pub fn id_str(self) -> &'static str {
         match self {
-            SpeciesId::Peeker => "01",
-            SpeciesId::Seedling => "02",
-            SpeciesId::Loaf => "03",
-            SpeciesId::Gourd => "04",
-            SpeciesId::Climber => "05",
-            SpeciesId::Heavy => "06",
-            SpeciesId::Peanut => "07",
-            SpeciesId::Pup => "08",
-            SpeciesId::RingTail => "09",
-            SpeciesId::Sprout => "10",
-            SpeciesId::Shadow => "11",
-            SpeciesId::Kaiju => "12",
+            SpeciesId::Cat => "01",
+            SpeciesId::Dog => "02",
+            SpeciesId::Rabbit => "03",
+            SpeciesId::Fox => "04",
+            SpeciesId::Owl => "05",
+            SpeciesId::Tortoise => "06",
         }
     }
 
-    /// Short title name.
+    /// Short display name.
     pub fn name(self) -> &'static str {
         match self {
-            SpeciesId::Peeker => "The Peeker",
-            SpeciesId::Seedling => "The Seedling",
-            SpeciesId::Loaf => "The Loaf",
-            SpeciesId::Gourd => "The Gourd",
-            SpeciesId::Climber => "The Climber",
-            SpeciesId::Heavy => "The Heavy",
-            SpeciesId::Peanut => "The Peanut",
-            SpeciesId::Pup => "The Pup",
-            SpeciesId::RingTail => "The Ring-tail",
-            SpeciesId::Sprout => "The Sprout",
-            SpeciesId::Shadow => "The Shadow",
-            SpeciesId::Kaiju => "The Kaiju",
+            SpeciesId::Cat => "Cat",
+            SpeciesId::Dog => "Dog",
+            SpeciesId::Rabbit => "Rabbit",
+            SpeciesId::Fox => "Fox",
+            SpeciesId::Owl => "Owl",
+            SpeciesId::Tortoise => "Tortoise",
         }
     }
 
-    /// Full display title with number prefix ("01 The Peeker").
+    /// Numbered display name used by the picker.
     pub fn full_name(self) -> &'static str {
         match self {
-            SpeciesId::Peeker => "01 The Peeker",
-            SpeciesId::Seedling => "02 The Seedling",
-            SpeciesId::Loaf => "03 The Loaf",
-            SpeciesId::Gourd => "04 The Gourd",
-            SpeciesId::Climber => "05 The Climber",
-            SpeciesId::Heavy => "06 The Heavy",
-            SpeciesId::Peanut => "07 The Peanut",
-            SpeciesId::Pup => "08 The Pup",
-            SpeciesId::RingTail => "09 The Ring-tail",
-            SpeciesId::Sprout => "10 The Sprout",
-            SpeciesId::Shadow => "11 The Shadow",
-            SpeciesId::Kaiju => "12 The Kaiju",
+            SpeciesId::Cat => "01 Cat",
+            SpeciesId::Dog => "02 Dog",
+            SpeciesId::Rabbit => "03 Rabbit",
+            SpeciesId::Fox => "04 Fox",
+            SpeciesId::Owl => "05 Owl",
+            SpeciesId::Tortoise => "06 Tortoise",
         }
     }
 
-    /// Short descriptive summary of features & personality.
+    /// Human-facing species summary suitable for a picker card.
     pub fn description(self) -> &'static str {
         match self {
-            SpeciesId::Peeker => {
-                "Dark charcoal sphere, asymmetric horns, loves window-edge peeking."
-            }
-            SpeciesId::Seedling => {
-                "Warm cream teardrop, spiral curly antenna, sits and observes gently."
-            }
-            SpeciesId::Loaf => {
-                "Terracotta slug, bulbous dorsal knob, heavy half-lids, slow & sleepy."
-            }
-            SpeciesId::Gourd => "Olive green tall body, floppy ear, playful bouncy cursor chaser.",
-            SpeciesId::Climber => {
-                "Periwinkle bean, S-antenna, agile limbs, climbs vertical window borders."
-            }
-            SpeciesId::Heavy => {
-                "Slate blue dome, floor-draping ear-arms, calm rhythmic music bobber."
-            }
-            SpeciesId::Peanut => {
-                "Royal purple peanut, glowing stalk antenna, delicate rhythmic dancer."
-            }
-            SpeciesId::Pup => {
-                "Spotted cream & brown, alert pointed ears, high-energy cursor player."
-            }
-            SpeciesId::RingTail => {
-                "Amber body, loop handle antenna, curls up on ledges for deep naps."
-            }
-            SpeciesId::Sprout => {
-                "Moss green body, triple-bump crest, sturdy wanderer along taskbars."
-            }
-            SpeciesId::Shadow => {
-                "Inky navy teardrop, scythe crest, wary gaze, skittish under heavy load."
-            }
-            SpeciesId::Kaiju => {
-                "Taupe quadruped, dorsal plates, peaceful smile, completely unflappable."
-            }
+            SpeciesId::Cat => "Curious, light-footed company for a quiet desktop.",
+            SpeciesId::Dog => "A sociable little explorer with a confident trot.",
+            SpeciesId::Rabbit => "Soft, alert, and happiest travelling in little hops.",
+            SpeciesId::Fox => "Nimble and curious, with a fondness for calm naps.",
+            SpeciesId::Owl => "Patient and watchful, with small, precise hops.",
+            SpeciesId::Tortoise => "A slow little explorer. Always stays grounded.",
         }
     }
 
-    /// Parse from 1-based index (1..=12).
+    /// Stable filesystem-friendly artwork key.
+    pub fn asset_slug(self) -> &'static str {
+        match self {
+            SpeciesId::Cat => "cat",
+            SpeciesId::Dog => "dog",
+            SpeciesId::Rabbit => "rabbit",
+            SpeciesId::Fox => "fox",
+            SpeciesId::Owl => "owl",
+            SpeciesId::Tortoise => "tortoise",
+        }
+    }
+
+    /// Parse a new stable 1-based id (1..=6).
     pub fn from_index(idx: u8) -> Option<Self> {
         match idx {
-            1 => Some(SpeciesId::Peeker),
-            2 => Some(SpeciesId::Seedling),
-            3 => Some(SpeciesId::Loaf),
-            4 => Some(SpeciesId::Gourd),
-            5 => Some(SpeciesId::Climber),
-            6 => Some(SpeciesId::Heavy),
-            7 => Some(SpeciesId::Peanut),
-            8 => Some(SpeciesId::Pup),
-            9 => Some(SpeciesId::RingTail),
-            10 => Some(SpeciesId::Sprout),
-            11 => Some(SpeciesId::Shadow),
-            12 => Some(SpeciesId::Kaiju),
+            1 => Some(SpeciesId::Cat),
+            2 => Some(SpeciesId::Dog),
+            3 => Some(SpeciesId::Rabbit),
+            4 => Some(SpeciesId::Fox),
+            5 => Some(SpeciesId::Owl),
+            6 => Some(SpeciesId::Tortoise),
             _ => None,
         }
     }
 
-    /// Default baseline personality traits tuned for this species.
+    /// Grounded movement capabilities used by the behaviour brain.
+    pub fn motion(self) -> MotionTraits {
+        match self {
+            SpeciesId::Cat => MotionTraits {
+                locomotion: Locomotion::Walk,
+                can_run: true,
+                can_jump: true,
+                can_climb: true,
+                can_chase_cursor: true,
+                speed_scale: 0.95,
+                jump_scale: 1.0,
+                jump_reach_px: 300.0,
+                jump_height_px: 165.0,
+            },
+            SpeciesId::Dog => MotionTraits {
+                locomotion: Locomotion::Walk,
+                can_run: true,
+                can_jump: true,
+                can_climb: false,
+                can_chase_cursor: true,
+                speed_scale: 1.05,
+                jump_scale: 0.9,
+                jump_reach_px: 220.0,
+                jump_height_px: 110.0,
+            },
+            SpeciesId::Rabbit => MotionTraits {
+                locomotion: Locomotion::Hop,
+                can_run: false,
+                can_jump: true,
+                can_climb: false,
+                can_chase_cursor: false,
+                speed_scale: 0.72,
+                jump_scale: 0.85,
+                jump_reach_px: 155.0,
+                jump_height_px: 95.0,
+            },
+            SpeciesId::Fox => MotionTraits {
+                locomotion: Locomotion::Walk,
+                can_run: true,
+                can_jump: true,
+                can_climb: true,
+                can_chase_cursor: true,
+                speed_scale: 1.0,
+                jump_scale: 0.95,
+                jump_reach_px: 240.0,
+                jump_height_px: 130.0,
+            },
+            SpeciesId::Owl => MotionTraits {
+                locomotion: Locomotion::Hop,
+                can_run: false,
+                can_jump: true,
+                can_climb: false,
+                can_chase_cursor: false,
+                speed_scale: 0.46,
+                jump_scale: 0.55,
+                jump_reach_px: 85.0,
+                jump_height_px: 45.0,
+            },
+            SpeciesId::Tortoise => MotionTraits {
+                locomotion: Locomotion::Crawl,
+                can_run: false,
+                can_jump: false,
+                can_climb: false,
+                can_chase_cursor: false,
+                speed_scale: 0.28,
+                jump_scale: 0.0,
+                jump_reach_px: 0.0,
+                jump_height_px: 0.0,
+            },
+        }
+    }
+
+    /// Default baseline personality, tuned to the real animal's temperament.
     pub fn default_personality(self) -> Personality {
         match self {
-            // 01 The Peeker: High curiosity & skittishness, loves window-edge peeking.
-            SpeciesId::Peeker => Personality {
-                boldness: 0.50,
-                laziness: 0.35,
-                playfulness: 0.60,
-                music_love: 0.70,
-                skittishness: 0.85,
-            },
-            // 02 The Seedling: Gentle, high comfort, sits and watches.
-            SpeciesId::Seedling => Personality {
-                boldness: 0.30,
-                laziness: 0.65,
-                playfulness: 0.40,
-                music_love: 0.75,
-                skittishness: 0.30,
-            },
-            // 03 The Loaf: High laziness, low boredom, slow moving, long naps.
-            SpeciesId::Loaf => Personality {
-                boldness: 0.25,
-                laziness: 0.95,
-                playfulness: 0.20,
-                music_love: 0.45,
-                skittishness: 0.15,
-            },
-            // 04 The Gourd: High playfulness, clumsy hops, curious cursor chaser.
-            SpeciesId::Gourd => Personality {
-                boldness: 0.75,
-                laziness: 0.30,
-                playfulness: 0.90,
-                music_love: 0.80,
-                skittishness: 0.40,
-            },
-            // 05 The Climber: High boldness & agility, scrambles up window walls.
-            SpeciesId::Climber => Personality {
-                boldness: 0.95,
-                laziness: 0.20,
-                playfulness: 0.75,
-                music_love: 0.60,
-                skittishness: 0.35,
-            },
-            // 06 The Heavy: Grounded, low jump capability, calm music bobber.
-            SpeciesId::Heavy => Personality {
-                boldness: 0.40,
-                laziness: 0.80,
-                playfulness: 0.30,
-                music_love: 0.95,
-                skittishness: 0.20,
-            },
-            // 07 The Peanut: Dainty, observant, high music love (bounces rhythmically).
-            SpeciesId::Peanut => Personality {
-                boldness: 0.55,
-                laziness: 0.45,
-                playfulness: 0.70,
-                music_love: 0.98,
-                skittishness: 0.40,
-            },
-            // 08 The Pup: High energy, high playfulness, chases cursors eagerly.
-            SpeciesId::Pup => Personality {
-                boldness: 0.85,
-                laziness: 0.15,
-                playfulness: 0.95,
-                music_love: 0.85,
-                skittishness: 0.45,
-            },
-            // 09 The Ring-tail: High sleepiness, curls up on ledges for deep naps.
-            SpeciesId::RingTail => Personality {
-                boldness: 0.35,
-                laziness: 0.90,
-                playfulness: 0.25,
+            SpeciesId::Cat => Personality {
+                boldness: 0.58,
+                laziness: 0.62,
+                playfulness: 0.52,
                 music_love: 0.55,
-                skittishness: 0.25,
+                skittishness: 0.62,
             },
-            // 10 The Sprout: Sturdy, idle explorer, wanders along taskbars.
-            SpeciesId::Sprout => Personality {
-                boldness: 0.65,
-                laziness: 0.50,
-                playfulness: 0.60,
+            SpeciesId::Dog => Personality {
+                boldness: 0.78,
+                laziness: 0.32,
+                playfulness: 0.86,
                 music_love: 0.70,
-                skittishness: 0.30,
+                skittishness: 0.38,
             },
-            // 11 The Shadow: Skittish, guarded gaze, reacts to heavy load / fast cursor.
-            SpeciesId::Shadow => Personality {
-                boldness: 0.20,
-                laziness: 0.40,
-                playfulness: 0.30,
-                music_love: 0.50,
-                skittishness: 0.95,
+            SpeciesId::Rabbit => Personality {
+                boldness: 0.38,
+                laziness: 0.48,
+                playfulness: 0.58,
+                music_love: 0.38,
+                skittishness: 0.82,
             },
-            // 12 The Kaiju: Unflappable, low stress response, peaceful.
-            SpeciesId::Kaiju => Personality {
-                boldness: 0.85,
-                laziness: 0.70,
-                playfulness: 0.40,
-                music_love: 0.60,
-                skittishness: 0.05,
+            SpeciesId::Fox => Personality {
+                boldness: 0.72,
+                laziness: 0.46,
+                playfulness: 0.60,
+                music_love: 0.42,
+                skittishness: 0.48,
+            },
+            SpeciesId::Owl => Personality {
+                boldness: 0.44,
+                laziness: 0.72,
+                playfulness: 0.24,
+                music_love: 0.30,
+                skittishness: 0.28,
+            },
+            SpeciesId::Tortoise => Personality {
+                boldness: 0.18,
+                laziness: 0.92,
+                playfulness: 0.12,
+                music_love: 0.18,
+                skittishness: 0.12,
             },
         }
     }
@@ -286,32 +287,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_12_species_present_and_unique() {
-        assert_eq!(SpeciesId::ALL.len(), 12);
-        for (i, &s) in SpeciesId::ALL.iter().enumerate() {
-            assert_eq!(s.index() as usize, i + 1);
-            assert_eq!(SpeciesId::from_index((i + 1) as u8), Some(s));
-            let p = s.default_personality();
-            assert!(p.boldness >= 0.0 && p.boldness <= 1.0);
-            assert!(p.laziness >= 0.0 && p.laziness <= 1.0);
-            assert!(p.playfulness >= 0.0 && p.playfulness <= 1.0);
-            assert!(p.music_love >= 0.0 && p.music_love <= 1.0);
-            assert!(p.skittishness >= 0.0 && p.skittishness <= 1.0);
+    fn six_real_species_have_stable_metadata() {
+        assert_eq!(SpeciesId::ALL.len(), 6);
+        for (i, &species) in SpeciesId::ALL.iter().enumerate() {
+            assert_eq!(species.index() as usize, i + 1);
+            assert_eq!(SpeciesId::from_index((i + 1) as u8), Some(species));
+            assert!(!species.name().is_empty());
+            assert!(species.full_name().starts_with(species.id_str()));
+            assert!(!species.description().is_empty());
+            assert!(!species.asset_slug().is_empty());
+            let p = species.default_personality();
+            assert!((0.0..=1.0).contains(&p.boldness));
+            assert!((0.0..=1.0).contains(&p.laziness));
+            assert!((0.0..=1.0).contains(&p.playfulness));
+            assert!((0.0..=1.0).contains(&p.music_love));
+            assert!((0.0..=1.0).contains(&p.skittishness));
         }
     }
 
     #[test]
-    fn personality_presets_match_archetypes() {
-        // Loaf should be extremely lazy.
-        assert!(SpeciesId::Loaf.default_personality().laziness > 0.9);
-        // Pup should be extremely playful and not lazy.
-        assert!(SpeciesId::Pup.default_personality().playfulness > 0.9);
-        assert!(SpeciesId::Pup.default_personality().laziness < 0.2);
-        // Climber should be bold.
-        assert!(SpeciesId::Climber.default_personality().boldness > 0.9);
-        // Shadow should be skittish.
-        assert!(SpeciesId::Shadow.default_personality().skittishness > 0.9);
-        // Kaiju should be unflappable (low skittishness).
-        assert!(SpeciesId::Kaiju.default_personality().skittishness < 0.1);
+    fn old_species_names_deserialise_to_real_animals() {
+        let cases = [
+            ("Peeker", SpeciesId::Cat),
+            ("Shadow", SpeciesId::Cat),
+            ("Pup", SpeciesId::Dog),
+            ("Gourd", SpeciesId::Dog),
+            ("Seedling", SpeciesId::Rabbit),
+            ("Peanut", SpeciesId::Rabbit),
+            ("RingTail", SpeciesId::Fox),
+            ("Climber", SpeciesId::Fox),
+            ("Heavy", SpeciesId::Owl),
+            ("Loaf", SpeciesId::Tortoise),
+            ("Sprout", SpeciesId::Tortoise),
+            ("Kaiju", SpeciesId::Tortoise),
+        ];
+        for (old, expected) in cases {
+            let json = format!("\"{old}\"");
+            assert_eq!(serde_json::from_str::<SpeciesId>(&json).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn tortoise_is_strictly_grounded_and_owl_hops() {
+        let tortoise = SpeciesId::Tortoise.motion();
+        assert!(!tortoise.can_run && !tortoise.can_jump && !tortoise.can_climb);
+        assert!(!tortoise.can_chase_cursor);
+        assert_eq!(tortoise.locomotion, Locomotion::Crawl);
+        let owl = SpeciesId::Owl.motion();
+        assert_eq!(owl.locomotion, Locomotion::Hop);
+        assert!(!owl.can_run);
+        assert!(owl.jump_reach_px < 100.0 && owl.jump_height_px < 50.0);
     }
 }

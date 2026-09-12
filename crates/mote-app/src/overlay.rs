@@ -16,9 +16,10 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, SetWindowPos, ShowWindow, UpdateLayeredWindow, HWND_TOPMOST, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, ULW_ALPHA, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    CreateWindowExW, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    UpdateLayeredWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, ULW_ALPHA, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 pub const OVERLAY_PX: i32 = SPRITE_PX as i32;
@@ -36,6 +37,30 @@ pub struct Overlay {
 }
 
 impl Overlay {
+    /// WS_EX_TRANSPARENT is required for click-through across other processes;
+    /// HTTRANSPARENT alone only continues hit testing in our own UI thread.
+    pub fn set_input_passthrough(&self, enabled: bool) {
+        unsafe {
+            let current = GetWindowLongPtrW(self.hwnd, GWL_EXSTYLE);
+            let next = if enabled {
+                current | WS_EX_TRANSPARENT.0 as isize
+            } else {
+                current & !(WS_EX_TRANSPARENT.0 as isize)
+            };
+            if current != next {
+                SetWindowLongPtrW(self.hwnd, GWL_EXSTYLE, next);
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+    }
     /// Create the window (hidden). `create_param` is passed through to
     /// `WM_NCCREATE` (the app stores its `*mut App` there).
     pub fn create(
@@ -212,11 +237,12 @@ impl Drop for Overlay {
             if !self.hwnd.0.is_null() {
                 let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(self.hwnd);
             }
-            if !self.dib.0.is_null() {
-                let _ = DeleteObject(self.dib.into());
-            }
+            // Release the DC first so its selected bitmap can be deleted.
             if !self.mem_dc.0.is_null() {
                 let _ = DeleteDC(self.mem_dc);
+            }
+            if !self.dib.0.is_null() {
+                let _ = DeleteObject(self.dib.into());
             }
         }
     }

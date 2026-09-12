@@ -15,8 +15,8 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, DestroyIcon, GetCursorPos, PostMessageW,
-    SetForegroundWindow, TrackPopupMenu, HICON, ICONINFO, MF_CHECKED, MF_POPUP, MF_SEPARATOR,
-    MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
+    SetForegroundWindow, TrackPopupMenu, HICON, ICONINFO, MF_CHECKED, MF_SEPARATOR, MF_STRING,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_NULL,
 };
 
 use crate::settings::{CreatureSize, Settings};
@@ -29,8 +29,8 @@ pub enum MenuAction {
     SleepWake,
     HideShow,
     CallMote,
-    SelectSpecies(mote_core::SpeciesId),
-    SetMoteCount(u32),
+    ChoosePets,
+    ToggleClickThrough,
     SizeSmall,
     SizeMedium,
     SizeLarge,
@@ -45,16 +45,10 @@ pub enum MenuAction {
 }
 
 fn action_from_id(id: usize) -> Option<MenuAction> {
-    if (41..=52).contains(&id) {
-        if let Some(sp) = mote_core::SpeciesId::from_index((id - 40) as u8) {
-            return Some(MenuAction::SelectSpecies(sp));
-        }
-    }
-    if (61..=64).contains(&id) {
-        return Some(MenuAction::SetMoteCount((id - 60) as u32));
-    }
     Some(match id as u32 {
+        10 => MenuAction::ChoosePets,
         11 => MenuAction::SleepWake,
+        38 => MenuAction::ToggleClickThrough,
         12 => MenuAction::HideShow,
         13 => MenuAction::CallMote,
         21 => MenuAction::SizeSmall,
@@ -163,48 +157,19 @@ impl TrayIcon {
                 let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
                 let _ = AppendMenuW(menu, check(on), id as usize, PCWSTR(wide.as_ptr()));
             };
+            item(10, "Choose your pets...");
             item(11, if sleeping { "Wake up" } else { "Sleep now" });
-            item(12, if hidden { "Show Mote" } else { "Hide Mote" });
+            item(
+                12,
+                if hidden {
+                    "Show pets    Ctrl+Alt+M"
+                } else {
+                    "Hide pets    Ctrl+Alt+M"
+                },
+            );
             item(13, "Call Mote here");
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
 
-            // Choose Mote submenu (12 species)
-            let species_menu = CreatePopupMenu().ok()?;
-            for &sp in mote_core::SpeciesId::all() {
-                let id = 40 + sp.index() as usize;
-                let on = s.species == sp;
-                let label = format!("{} ({})", sp.full_name(), sp.description());
-                let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
-                let _ = AppendMenuW(species_menu, check(on), id, PCWSTR(wide.as_ptr()));
-            }
-            let _ = AppendMenuW(menu, MF_POPUP, species_menu.0 as usize, w!("Choose Mote"));
-
-            // Desktop Cohabitation submenu (1 to 4 Motes)
-            let count_menu = CreatePopupMenu().ok()?;
-            let counts = [
-                (1, "1 Mote (Solo)"),
-                (2, "2 Motes (Duo)"),
-                (3, "3 Motes (Trio)"),
-                (4, "4 Motes (Pack)"),
-            ];
-            for (cnt, label) in counts {
-                let on = s.mote_count == cnt;
-                let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
-                let _ = AppendMenuW(
-                    count_menu,
-                    check(on),
-                    (60 + cnt) as usize,
-                    PCWSTR(wide.as_ptr()),
-                );
-            }
-            let _ = AppendMenuW(
-                menu,
-                MF_POPUP,
-                count_menu.0 as usize,
-                w!("Desktop Cohabitation"),
-            );
-
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let size_label = format!("Size: {}", s.size.label());
             let wide: Vec<u16> = size_label
                 .encode_utf16()
@@ -230,6 +195,7 @@ impl TrayIcon {
                 w!("    Large"),
             );
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+            toggle(38, "Let clicks pass through pets", s.click_through);
             toggle(31, "React to music", s.music_reactions);
             toggle(32, "Play with cursor", s.cursor_interactions);
             toggle(33, "React to heavy load", s.cpu_reactions);
@@ -308,10 +274,10 @@ fn build_mote_icon(species: mote_core::SpeciesId) -> Option<HICON> {
             }
             let o = (oy * N + ox) * 4;
             if a > 0 {
-                // Un-premultiply (average).
-                color[o] = (b * 64 / a.max(1)) as u8;
-                color[o + 1] = (g * 64 / a.max(1)) as u8;
-                color[o + 2] = (r * 64 / a.max(1)) as u8;
+                // Windows alpha icons require premultiplied BGRA.
+                color[o] = (b / 64) as u8;
+                color[o + 1] = (g / 64) as u8;
+                color[o + 2] = (r / 64) as u8;
                 color[o + 3] = (a / 64) as u8;
             }
             // 1bpp mask: 1 = transparent.
@@ -351,54 +317,22 @@ fn build_mote_icon(species: mote_core::SpeciesId) -> Option<HICON> {
             hbmMask: hbm_mask,
             hbmColor: hbm_color,
         };
-        CreateIconIndirect(&info).ok()
+        let icon = CreateIconIndirect(&info).ok();
+        let _ = windows::Win32::Graphics::Gdi::DeleteObject(hbm_color.into());
+        let _ = windows::Win32::Graphics::Gdi::DeleteObject(hbm_mask.into());
+        icon
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mote_core::SpeciesId;
-
     #[test]
-    fn action_from_id_maps_all_12_species() {
-        for (i, &sp) in SpeciesId::ALL.iter().enumerate() {
-            let id = 41 + i;
-            assert_eq!(
-                action_from_id(id),
-                Some(MenuAction::SelectSpecies(sp)),
-                "ID {} must map to species {:?}",
-                id,
-                sp
-            );
-        }
-        // Verify boundaries: 40 and 53 should not map to species
-        assert_ne!(
-            action_from_id(40),
-            Some(MenuAction::SelectSpecies(SpeciesId::Peeker))
-        );
-        assert_eq!(action_from_id(40), None);
-        assert_eq!(action_from_id(53), None);
-
-        // Explicitly check 01 The Peeker and 12 The Kaiju
-        assert_eq!(
-            action_from_id(41),
-            Some(MenuAction::SelectSpecies(SpeciesId::Peeker))
-        );
-        assert_eq!(
-            action_from_id(52),
-            Some(MenuAction::SelectSpecies(SpeciesId::Kaiju))
-        );
-    }
-
-    #[test]
-    fn action_from_id_maps_cohabitation_counts() {
-        for count in 1..=4 {
-            let id = 60 + count;
-            assert_eq!(
-                action_from_id(id as usize),
-                Some(MenuAction::SetMoteCount(count))
-            );
-        }
+    fn tray_routes_picker_and_unobtrusive_controls() {
+        assert_eq!(action_from_id(10), Some(MenuAction::ChoosePets));
+        assert_eq!(action_from_id(12), Some(MenuAction::HideShow));
+        assert_eq!(action_from_id(38), Some(MenuAction::ToggleClickThrough));
+        assert_eq!(action_from_id(41), None);
+        assert_eq!(action_from_id(99), Some(MenuAction::Quit));
     }
 }

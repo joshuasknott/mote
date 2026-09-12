@@ -7,6 +7,7 @@
 
 mod app;
 mod overlay;
+mod picker;
 mod settings;
 mod tray;
 
@@ -38,9 +39,24 @@ fn main() {
         self_test();
         return;
     }
+    if args.iter().any(|a| a == "--quit") {
+        unsafe {
+            if let Ok(hwnd) =
+                windows::Win32::UI::WindowsAndMessaging::FindWindowW(w!("MoteOverlay"), None)
+            {
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    Some(hwnd),
+                    windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+        return;
+    }
     log::info!("Mote starting");
 
-    // Single instance: a second launch just exits (the first keeps running).
+    // A deliberate second launch reopens selection in the existing process.
     unsafe {
         let _mutex = match CreateMutexW(None, true, w!("Local\\MoteDesktopPet")) {
             Ok(h) => h,
@@ -50,7 +66,18 @@ fn main() {
             }
         };
         if GetLastError() == ERROR_ALREADY_EXISTS {
-            log::info!("another Mote is already running; exiting");
+            if !args.iter().any(|a| a == "--background") {
+                if let Ok(hwnd) =
+                    windows::Win32::UI::WindowsAndMessaging::FindWindowW(w!("MoteOverlay"), None)
+                {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        Some(hwnd),
+                        picker::WM_APP_OPEN_PICKER,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
+            }
             return;
         }
 
@@ -59,14 +86,14 @@ fn main() {
             log::warn!("DPI awareness failed (continuing): {e}");
         }
 
-        if let Err(e) = run() {
+        if let Err(e) = run(!args.iter().any(|a| a == "--background")) {
             log::error!("fatal: {e:?}");
         }
         // `_mutex` released here.
     }
 }
 
-fn run() -> windows::core::Result<()> {
+fn run(show_picker: bool) -> windows::core::Result<()> {
     unsafe {
         let instance: HINSTANCE =
             windows::Win32::System::LibraryLoader::GetModuleHandleW(None)?.into();
@@ -94,7 +121,7 @@ fn run() -> windows::core::Result<()> {
 
         // Settings before App (spawn + size depend on them).
         let mut s = settings::load();
-        s.launch_at_startup = settings::startup_enabled() || s.launch_at_startup;
+        s.launch_at_startup = settings::startup_enabled();
 
         // Box the App so its address is stable for the window proc.
         let mut app_box = Box::new(App::new(s));
@@ -103,6 +130,9 @@ fn run() -> windows::core::Result<()> {
         let overlay = Overlay::create(instance, app_ptr)?;
         let hwnd: HWND = overlay.hwnd;
         app_box.attach(hwnd, overlay);
+        if show_picker {
+            app_box.open_picker();
+        }
 
         // Hand ownership to the window proc; reclaim after the loop.
         let raw = Box::into_raw(app_box);
@@ -272,7 +302,7 @@ fn self_test() {
         sim.body.grounded()
     );
 
-    // Renderer smoke: verify all 12 vision board species.
+    // Renderer smoke: verify all six realistic species.
     let mut anim = mote_render::Animator::new(64.0);
     for &species in mote_core::SpeciesId::all() {
         let inp = mote_render::AnimInput {
@@ -296,12 +326,12 @@ fn self_test() {
             ok = false;
         }
     }
-    println!("render: all 12 vision board species rendered successfully");
+    println!("render: all six realistic species rendered successfully");
 
-    // Signature spatial behavior smoke checks:
-    // 1. "01 peeks" - window-edge peeking lower body mask
+    // Render-only pose smoke checks (physics has separate deterministic tests).
+    // Window-edge peeking lower body mask.
     let peek_pose = mote_render::creature::Pose {
-        species: mote_core::SpeciesId::Peeker,
+        species: mote_core::SpeciesId::Cat,
         is_peeking: true,
         hop_px: 40.0,
         ..Default::default()
@@ -319,9 +349,9 @@ fn self_test() {
         ok = false;
     }
 
-    // 2. "05 climbs" - vertical border wall-climbing
+    // Vertical border climbing pose.
     let climb_pose = mote_render::creature::Pose {
-        species: mote_core::SpeciesId::Climber,
+        species: mote_core::SpeciesId::Fox,
         is_climbing: true,
         climb_phase: 1.0,
         facing: 1,
@@ -340,9 +370,9 @@ fn self_test() {
         ok = false;
     }
 
-    // 3. "09 naps" - curled ledge napping
+    // Curled ledge napping pose.
     let nap_pose = mote_render::creature::Pose {
-        species: mote_core::SpeciesId::RingTail,
+        species: mote_core::SpeciesId::Fox,
         is_napping: true,
         sleep_amount: 1.0,
         time_s: 2.0,
@@ -360,12 +390,12 @@ fn self_test() {
         println!("FAIL: curled napping frame did not render properly");
         ok = false;
     }
-    println!("behaviors: 01 peeks, 05 climbs, 09 naps validated");
+    println!("poses: peek, climb and sleep render smoke checks passed");
 
     // 4. Multi-mote desktop cohabitation (Pack: 4 motes)
     let pack_settings = settings::Settings {
         mote_count: 4,
-        species: mote_core::SpeciesId::Peeker,
+        species: mote_core::SpeciesId::Cat,
         ..settings::Settings::default()
     };
     let app = App::new(pack_settings);
@@ -416,14 +446,4 @@ fn init_file_logging() {
     std::panic::set_hook(Box::new(|info| {
         log::error!("panic: {info}");
     }));
-}
-
-#[allow(dead_code)]
-fn _unused_wparam() -> WPARAM {
-    WPARAM(0)
-}
-
-#[allow(dead_code)]
-fn _unused_lparam() -> LPARAM {
-    LPARAM(0)
 }

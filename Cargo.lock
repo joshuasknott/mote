@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "mote-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "env_logger",
  "log",
@@ -326,15 +326,16 @@ dependencies = [
 
 [[package]]
 name = "mote-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "mote-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "mote-core",
@@ -345,12 +346,13 @@ dependencies = [
 
 [[package]]
 name = "mote-win"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "mote-core",
  "serde",
  "windows",
+ "windows-future",
 ]
 
 [[package]]

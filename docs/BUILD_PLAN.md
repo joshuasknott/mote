@@ -1,73 +1,86 @@
-# Build plan — implemented, verified, and remaining
+# Build plan — implementation and acceptance
 
-## Character and interaction pass (8 September 2026)
+## Realistic pet release (12 September 2026)
 
-Implemented in the application:
+Implemented:
 
-- Twelve individually authored cubic silhouettes replace the ellipse/triangle
-  renderer: bent horns, continuous curls, floppy ears, a real ring opening,
-  draped arms, and Kaiju dorsal plates and tail.
-- Muted vision-board colours, ink contours, asymmetric eyes and brows,
-  curved mouths and paws, irregular flank markings, and cached pigment grain.
-- Foot-anchored squash/stretch, whole-body tilt, articulated steps, antenna
-  sway (disabled by reduce motion), peeking fingers and climbing grips.
-- Ring-tail has a separate curled nap drawing; other species use compressed
-  sleeping poses. Entering/leaving the Ring-tail drawing still needs a morph.
-- Oversized/stretching silhouettes fit the native canvas without cutting off
-  horns. All three size settings have automated boundary coverage.
-- Hit testing uses the last presented frame's alpha, including holes and
-  negative monitor coordinates, instead of an invisible circular target.
-- Reproducible runtime gallery, pose sheet, size sheet and renderer timing:
-  `cargo run --release -p mote-render --example gallery`.
+- Six real animal species replace the fantasy roster: tabby cat, Shiba Inu,
+  lop rabbit, red fox, barn owl and Hermann's tortoise.
+- Six embedded transparent eight-pose atlases; native runtime rendering,
+  species-consistent scaling, foot anchoring, walking poses, sleep and jump
+  transitions, restrained breathing and landing flex. Tortoise shells remain
+  rigid. Reduce Motion suppresses decorative movement.
+- A native game-style character picker with large previews, a six-animal
+  roster, explicit one-to-four-pet lineup, Quiet and Reduce Motion controls,
+  mouse selection, keyboard focus traversal, and cancellation.
+- Exact lineup persistence; old fantasy species deserialize to real animals.
+  Settings writes replace the saved document after the new file is written.
+- Small, taskbar-only quiet defaults. Cursor play, window climbing, CPU and
+  audio reactions are optional. Click-through uses the native cross-process
+  window style; Ctrl+Alt+M hides/shows with tray fallback.
+- Normal and second launches reopen selection; --background restores the
+  saved pets without showing the picker. Optional Windows startup uses this
+  quiet launch path. --quit closes the running process cleanly.
+- Species movement constraints: tortoises stay grounded, rabbits and owls
+  hop, and non-running animals walk when called. Cursor chasing requires
+  active user input.
+- Corrected time-based friction, preserved airborne jump velocity, and
+  horizontal support riding when a window moves.
+- About 30fps active rendering, reduced sleep cadence, and paused simulation
+  and rendering while hidden, choosing pets or in fullscreen applications.
+- Native media-session play/pause information with local peak-meter fallback
+  for applications that do not expose a media session. No audio recording,
+  media titles, application identifiers, networking or telemetry.
+- Portable ZIP packaging with all artwork embedded in Mote.exe, a quick-start
+  guide and the license. No checkout or external asset files required.
 
-Verification in this pass:
+## Verification record
 
-- Windows workspace tests, format check and strict Clippy; release build.
-- Native `mote.exe --self-test`: sensors, simulation, twelve renders and pack
-  initialization pass. Its pose checks are render smoke checks, not proof of
-  every autonomous behaviour on the desktop.
-- Observed the new Climber on a real window edge in the Windows overlay.
-- Inspected all twelve drawings on light/dark backgrounds and all three sizes.
-- Release renderer measured approximately 0.8 ms/frame across 240 warm,
-  mixed-species frames on this machine. This excludes sensing, simulation and
-  native presentation; it is not a whole-app CPU or battery benchmark.
+Verified locally on Windows on 12 September 2026:
 
-## Existing capabilities
+- `cargo fmt --all -- --check` and strict workspace/all-target Clippy passed.
+- All 79 workspace tests passed: 15 app, 35 core, 10 renderer and 19 Windows.
+  These include species movement limits, moving supports, jump velocity,
+  settings migration, exact lineups, alpha blending and rotated sprite bounds.
+- The native picker was inspected at 1040x680. Mouse selection, the four-pet
+  limit, saved lineup order and Reduce Motion persistence were checked. The
+  portable build also passed live arrow/Space selection and Escape cancellation
+  checks, including preservation of the saved lineup after cancellation.
+- Layout tests cover 1040x680, 900x600 and 720x500. The two smaller sizes were
+  checked geometrically; they were not separate display-hardware observations.
+- Release runtime galleries show all six animals, eight states per animal and
+  all three sizes. The current gallery and native picker screenshot are in docs.
+- The packaged executable passed `--self-test` from its own package directory:
+  one 3440x1440 monitor at 96 DPI, bottom taskbar, live cursor/system/audio
+  queries, simulation, all six renderers and four-species pack initialization.
+  Native overlay logs also showed matching source/DIB alpha and running pet
+  state transitions. This is API/log evidence, not a complete desktop soak.
+- The portable ZIP contains exactly Mote.exe, LICENSE and QUICKSTART.md; its
+  executable hash matches the release build. Artwork is embedded. The ZIP is
+  about 11.4 MiB and the executable about 11.8 MiB.
 
-These are present in source and covered by the current tests where practical;
-this pass did not repeat every historical live acceptance check.
+The release gallery measured 9.287ms per warm mixed-species frame during a
+concurrent build workload. That measurement excludes the rest of the app and
+does not establish sustained whole-app frame rate or idle resource use.
+Live media play/pause transitions were not exercised with a media player;
+SMTC status handling is covered by focused tests.
 
-- Native transparent, non-activating layered overlays and tray controls.
-- Desktop/taskbar/window geometry; gravity, swept landings, moving support
-  riding/loss, window jumps and vertical wall climbing.
-- Species personalities, drives, cooldowns, coherent behaviour selection,
-  cursor gaze/startle/chase, petting, drag/throw, idle sleep and wake.
-- Local CPU/memory sensing and output peak-meter music reaction; no recording.
-- Settings persistence, startup option, single-instance guard, local logging,
-  suspend/resume and fullscreen pause handling.
-- One to four Motes with selectable species and shared world geometry.
-- Windows CI runs format, Clippy, tests, native smoke and release build.
+## Acceptance boundaries
 
-## Next improvements, in priority order
+The animals use a finite set of generated realistic 2D poses. They are not
+3D skeletal animals; independent continuous head/limb articulation and full
+flight are outside this build. Window climbing reuses locomotion poses.
 
-1. **Animation choreography:** richer species-specific walks, climb hand-over-
-   hand cycles, distinct jump/landing poses, and smooth curled-sleep transitions.
-   The current illustrations are animated vectors, not a full frame-by-frame
-   hand-painted animation set.
-2. **Desktop acceptance:** moving/minimising a climbed window, Explorer restart,
-   lock/resume, autohide taskbars, and a four-pet soak with CPU/RSS measurements.
-3. **Multi-monitor acceptance:** mixed DPI, negative coordinates, unplug/replug,
-   and dragging between monitors. Unit coverage is not a substitute for hardware.
-4. **Media state:** integrate SMTC for actual play/pause; the present output
-   meter also responds to video and games and cannot identify music.
-5. **Packaging:** installer and executable icon, signing/release workflow and
-   install/uninstall checks. A release executable is available from Cargo.
-6. **Social behaviour:** existing cohabitation/gaze is a starting point; richer
-   shared play, resting together and collision avoidance remain.
-7. **Settings polish:** a small optional native panel if the tray becomes
-   cumbersome. Keep the creature as the product.
+The code supports multiple monitors, DPI changes, support loss, fullscreen
+pause and suspend/resume. Mixed-DPI monitor hotplug, Explorer restart,
+lock/resume, auto-hide taskbars and long-running four-pet performance still
+need broader hardware acceptance. Unit tests and the native smoke command
+are not substitutes for those observations.
+
+The portable Windows build is unsigned. A signed installer and public
+release require a signing identity and separate publication authorization.
 
 ## Out of scope
 
-Chat, LLMs, voice, notes/reminders, accounts, telemetry, network access,
-Tamagotchi obligations, and dashboard-style settings.
+Chat, LLMs, voice, notes/reminders, accounts, telemetry, networking, feeding
+obligations, multiplayer and productivity dashboards.

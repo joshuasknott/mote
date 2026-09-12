@@ -38,6 +38,10 @@ pub struct Settings {
     pub species: mote_core::SpeciesId,
     /// Number of concurrent Motes on desktop (1..=4).
     pub mote_count: u32,
+    /// Explicit character-select lineup. Empty only when migrating older settings.
+    pub pets: Vec<mote_core::SpeciesId>,
+    /// Pass all mouse input through pets; tray and keyboard controls still work.
+    pub click_through: bool,
     pub music_reactions: bool,
     pub cursor_interactions: bool,
     pub cpu_reactions: bool,
@@ -53,13 +57,15 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            size: CreatureSize::Medium,
-            species: mote_core::SpeciesId::Peeker,
+            size: CreatureSize::Small,
+            species: mote_core::SpeciesId::Cat,
             mote_count: 1,
-            music_reactions: true,
-            cursor_interactions: true,
-            cpu_reactions: true,
-            allow_climbing: true,
+            pets: Vec::new(),
+            click_through: false,
+            music_reactions: false,
+            cursor_interactions: false,
+            cpu_reactions: false,
+            allow_climbing: false,
             reduce_motion: false,
             pause_on_fullscreen: true,
             launch_at_startup: false,
@@ -68,7 +74,49 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    pub fn lineup(&self) -> Vec<mote_core::SpeciesId> {
+        if self.pets.is_empty() {
+            let all = mote_core::SpeciesId::all();
+            return (0..self.mote_count.clamp(1, 4) as usize)
+                .map(|i| all[(self.species.index() as usize - 1 + i) % all.len()])
+                .collect();
+        }
+        let mut result = Vec::new();
+        for &pet in &self.pets {
+            if !result.contains(&pet) && result.len() < 4 {
+                result.push(pet);
+            }
+        }
+        result
+    }
+
+    pub fn set_lineup(&mut self, pets: Vec<mote_core::SpeciesId>) {
+        self.pets = pets;
+        self.pets = self.lineup();
+        self.species = self.pets[0];
+        self.mote_count = self.pets.len() as u32;
+    }
+
+    pub fn quiet(&self) -> bool {
+        !self.allow_climbing
+            && !self.cursor_interactions
+            && !self.music_reactions
+            && !self.cpu_reactions
+    }
+
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.allow_climbing = !quiet;
+        self.cursor_interactions = !quiet;
+        self.music_reactions = !quiet;
+        self.cpu_reactions = !quiet;
+    }
+}
+
 pub fn settings_path() -> PathBuf {
+    if let Some(dir) = std::env::var_os("MOTE_DATA_DIR") {
+        return PathBuf::from(dir).join("settings.json");
+    }
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
@@ -76,6 +124,9 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn log_path() -> PathBuf {
+    if let Some(dir) = std::env::var_os("MOTE_DATA_DIR") {
+        return PathBuf::from(dir).join("mote.log");
+    }
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
@@ -86,7 +137,8 @@ pub fn load() -> Settings {
     let path = settings_path();
     match std::fs::read_to_string(&path) {
         Ok(text) => match serde_json::from_str::<Settings>(&text) {
-            Ok(s) => {
+            Ok(mut s) => {
+                s.set_lineup(s.lineup());
                 log::info!("loaded settings from {}", path.display());
                 return s;
             }
@@ -104,7 +156,12 @@ pub fn save(s: &Settings) {
     }
     match serde_json::to_string_pretty(s) {
         Ok(text) => {
-            if let Err(e) = std::fs::write(&path, text) {
+            // Replace only after the complete document is on disk. An interrupted
+            // write must not destroy the user's last working lineup/settings.
+            let temporary = path.with_extension("json.tmp");
+            let result =
+                std::fs::write(&temporary, text).and_then(|_| std::fs::rename(&temporary, &path));
+            if let Err(e) = result {
                 log::warn!("failed to save settings: {e}");
             }
         }
@@ -175,7 +232,7 @@ pub fn set_startup(enable: bool) {
         }
         if enable {
             if let Ok(exe) = std::env::current_exe() {
-                let cmd = format!("\"{}\"", exe.display());
+                let cmd = format!("\"{}\" --background", exe.display());
                 // REG_SZ with nul terminator.
                 let mut wide: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
                 let bytes =
@@ -196,25 +253,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_lineup_is_bounded_unique_and_roundtrips() {
+        use mote_core::SpeciesId::*;
+        let mut s = Settings::default();
+        s.set_lineup(vec![Owl, Owl, Cat, Rabbit, Fox, Dog]);
+        assert_eq!(s.pets, vec![Owl, Cat, Rabbit, Fox]);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.lineup(), s.pets);
+        assert_eq!(back.mote_count, 4);
+    }
+
+    #[test]
+    fn old_species_settings_migrate_to_real_animals() {
+        use mote_core::SpeciesId::*;
+        let mut s: Settings =
+            serde_json::from_str(r#"{"species":"RingTail","mote_count":4}"#).unwrap();
+        s.set_lineup(s.lineup());
+        assert_eq!(s.pets, vec![Fox, Owl, Tortoise, Cat]);
+        assert_eq!(s.mote_count, 4);
+    }
+
+    #[test]
     fn defaults_sane() {
         let s = Settings::default();
-        assert_eq!(s.size, CreatureSize::Medium);
-        assert_eq!(s.species, mote_core::SpeciesId::Peeker);
+        assert_eq!(s.size, CreatureSize::Small);
+        assert_eq!(s.species, mote_core::SpeciesId::Cat);
         assert_eq!(s.mote_count, 1);
-        assert!(s.music_reactions && s.cursor_interactions && s.cpu_reactions);
+        assert!(s.quiet());
+        assert!(!s.launch_at_startup);
+        assert!(s.pause_on_fullscreen);
     }
 
     #[test]
     fn roundtrip_json() {
         let s = Settings {
-            species: mote_core::SpeciesId::Sprout,
+            species: mote_core::SpeciesId::Tortoise,
             mote_count: 3,
             ..Default::default()
         };
         let text = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&text).unwrap();
-        assert_eq!(back.size, CreatureSize::Medium);
-        assert_eq!(back.species, mote_core::SpeciesId::Sprout);
+        assert_eq!(back.size, CreatureSize::Small);
+        assert_eq!(back.species, mote_core::SpeciesId::Tortoise);
         assert_eq!(back.mote_count, 3);
     }
 
@@ -234,7 +314,7 @@ mod tests {
         }"#;
         let s: Settings = serde_json::from_str(old_json).unwrap();
         assert_eq!(s.size, CreatureSize::Small);
-        assert_eq!(s.species, mote_core::SpeciesId::Peeker);
+        assert_eq!(s.species, mote_core::SpeciesId::Cat);
         assert_eq!(s.mote_count, 1);
     }
 }

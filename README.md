@@ -1,122 +1,109 @@
 # Mote — the world's most overengineered desktop pet
 
-Mote is a tiny animated creature that genuinely lives inside Windows. It is
-not an assistant, chatbot, or productivity tool — it just lives on your
-desktop: sitting on the taskbar, wandering along window edges, jumping
-between windows, napping when you are away, and bouncing (very slightly) to
-your music.
+Six small, realistic animals that live on your Windows desktop. Choose a
+cat, Shiba Inu, lop rabbit, fox, barn owl, or tortoise from a game-style
+character picker, put together a lineup of up to four pets, and bring them
+home. No feeding chores, accounts, chat, or notifications.
 
-![status](https://img.shields.io/badge/platform-Windows%2011-blue)
-![license](https://img.shields.io/badge/license-MIT-green)
+![The six pets rendered by Mote](docs/characters.png)
 
-## The creatures
+## Pick a pet
 
-![The twelve Mote characters, rendered by the app](docs/characters.png)
+![Native pet picker](docs/picker.png)
 
-Twelve distinct inked silhouettes with muted colours, pigment texture,
-asymmetric expressions and curved limbs. The runtime artwork follows the
-vision board, with foot-anchored squash/stretch, tilt, blinks, gaze, antenna
-sway, climbing grips, peeking fingers and a curled Ring-tail nap pose.
-Choose a species and one to four Motes from the tray menu. Click targets
-follow the visible artwork, including the transparent ring opening.
+Open Mote to see the native character picker. Browse the six animals, click
+cards to add or remove them, and choose **Bring them home**. Your individual
+lineup and preferences are saved. Double-click the tray icon or launch Mote
+again to reopen selection. Windows startup uses your saved pets quietly.
 
-## What it does today
+The animals use detailed transparent raster artwork with eight source poses
+per species. Their animation combines walking frames, anticipation, landing,
+resting and sleeping poses with restrained procedural movement. They are
+realistic 2D animals, not fully rigged 3D simulations. Artwork and generation
+prompts are in [assets/pets](assets/pets/README.md).
 
-- **Lives on the taskbar** — spawns there, walks, sits, stretches, looks around.
-- **Stands on real windows** — top edges of visible, non-minimised,
-  non-cloaked windows become ledges via `EnumWindows` + DWM cloak checks.
-- **Jumps between surfaces** — utility-scored jump targeting within its
-  physical capability (300 px reach, 165 px rise), with anticipation stretch,
-  airborne stretch, landing squash, and impact-scaled recovery.
-- **Falls with gravity** — walks off edges, gets carried by windows that move
-  underneath it, falls (with style) when a window disappears, and recovers to
-  a safety net instead of ever getting stuck.
-- **Sleeps when you are idle** (2 min, via `GetLastInputInfo`), wakes when you
-  return. Sleeping poses, slow breathing, rising sleep marks.
-- **Reacts to you** — gaze follows the cursor, fast approaches startle it
-  (wide eyes, "o" mouth), slow nearby cursors invite chasing or curiosity,
-  very close fast cursors make it scoot away. Click to pet it (blush + happy
-  hop). Drag it anywhere and throw it — it tumbles, lands, and recovers.
-- **Reacts to load** — sustained >85% CPU (via `GetSystemTimes`) triggers a
-  wilted "this offends me" sulk with wavy mouth.
-- **Reacts to music** — reads only the output peak meter
-  (`IAudioMeterInformation`, no audio captured/stored/sent) and bobs;
-  sustained playback + high spirits trigger an explicit dance.
-- **System tray pet care** — sleep/wake, hide/show, call-it-here, size,
-  per-reaction toggles, reduce-motion, pause-in-fullscreen, launch-at-startup.
-- **Behaves coherently** — utility-scored state machine with minimum durations
-  and cooldowns over drives (energy, curiosity, boredom, comfort, excitement,
-  sleepiness, stress). No flapping, no Tamagotchi obligations.
+## Quiet by default
 
-## Run it
+- Small pets stay near the taskbar and leave application windows and the cursor alone.
+- Fullscreen applications automatically hide and pause the pets.
+- **Ctrl+Alt+M** hides or shows them immediately (if that shortcut is available).
+- **Let clicks pass through pets** disables their mouse targets across applications.
+- Quiet and Reduce Motion controls are in the picker; individual reactions and size are in the tray.
+- Launch at startup is off until you enable it. Mote never asks for attention.
 
-Requirements: Windows 10/11 and current stable Rust (matching CI).
+Turn Quiet off to enable optional window climbing, cursor play, audio and
+system-load reactions. These settings can also be changed individually.
+Click to pet an animal, drag to move it, and right-click for sleep, hide,
+call-here and settings. Tortoises stay grounded; rabbits and owls use hops.
 
-```powershell
-cargo run -p mote-app            # debug build (console window for logs)
-cargo run -p mote-app -- --self-test   # headless sensor/sim/render smoke test
-```
+## Native desktop functionality
 
-Release (no console window, LTO):
+The Rust simulation uses real desktop, taskbar and window geometry. It
+supports gravity, swept landings, moving-window support, jumping, optional
+climbing, cursor startle and curiosity, idle sleep and waking. Species have
+different movement capabilities, drives and cooldowns. Multiple pets share
+one world snapshot and notice nearby companions.
+
+The overlay uses native layered windows, per-pixel alpha and no-activation
+styles. Rendering runs at about 30 frames/second when awake and about eight
+when all pets are asleep. Hidden and fullscreen states reduce the timer to
+four ticks/second and skip simulation/rendering. Geometry updates use
+WinEvents with a periodic recovery refresh.
+
+## Run
+
+Windows 10/11 and current stable Rust are required to build. The resulting
+executable includes all pet artwork and needs no Rust installation or webview.
 
 ```powershell
+cargo run -p mote-app
 cargo build --release -p mote-app
 .\target\release\mote.exe
 ```
 
-Settings persist to `%APPDATA%\Mote\settings.json`, logs to
-`%LOCALAPPDATA%\Mote\mote.log`. Single-instance guarded.
-
-## Architecture
-
-Pure Rust, no game engine, no webview. Four crates with strict boundaries:
-
-| Crate | Owns | Must never |
-|---|---|---|
-| `mote-core` | physics, world model, behaviour brain, drives/personality | touch any OS API |
-| `mote-win` | monitors, DPI, taskbar, windows, cursor/idle, CPU/mem, audio meter, WinEvents | decide behaviour |
-| `mote-render` | authored vector creatures, pigment texture and pose animation | know about Windows |
-| `mote-app` | layered overlay, message loop, tray menu, settings, wiring | contain behaviour logic |
-
-Why no Tauri/webview: the pet is a 256×256 software-rastered layered window
-at ~30 fps. The renderer uses tiny-skia with cached paths and grain; it needs
-no webview or game engine. See
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-
-## Privacy
-
-Local-first. No account, no network calls, no telemetry, no analytics. The
-audio path reads a loudness scalar only — capturing audio is impossible
-through the API used. Window titles are never stored (only geometries are
-kept in memory for physics).
-
-## Known limitations
-
-- Window-top ledges use the full top edge including title bars — Mote
-  sometimes perches where a tab strip is. Endearing, mostly.
-- Vertical climbing is implemented, but grip choreography and transitions
-  still need polish. Most sleep poses deform the standing art; Ring-tail has
-  a separate curled drawing whose transition still needs smoothing.
-- Exact media play/stop metadata (SMTC) is not integrated; playback is
-  inferred from sustained audio output, which also covers games/video.
-- The tray icon hides in the Windows 11 overflow by default — drag it out.
-- Single monitor thoroughly tested; multi-monitor works via the virtual-screen
-  model but has had less soak time. See
-  [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) for the full implemented vs
-  remaining list.
-
-## Check the artwork
+Optional commands:
 
 ```powershell
-cargo run --release -p mote-render --example gallery
+.\target\release\mote.exe --background  # start saved pets without the picker
+.\target\release\mote.exe --quit        # close the running instance
+.\target\release\mote.exe --self-test   # live sensor + simulation + render smoke
+.\scripts\package.ps1                  # build a portable ZIP under target/package
+```
+
+[Quick start and removal](docs/QUICKSTART.md). Settings are stored in
+`%APPDATA%\Mote\settings.json`, logs in `%LOCALAPPDATA%\Mote\mote.log`.
+`MOTE_DATA_DIR` can point to an isolated local profile for development/QA.
+Older fantasy-species settings migrate to the closest animal and retain
+the user's previous settings.
+
+## Architecture and checks
+
+Four Rust crates keep Windows sensing, deterministic simulation, raster
+rendering and application controls separate. The picker is a native Win32
+window with GDI text and cached animal previews. There is no game engine or
+browser runtime. See [architecture](docs/ARCHITECTURE.md) and
+[build status and acceptance evidence](docs/BUILD_PLAN.md).
+
+```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo run --release -p mote-render --example gallery
 ```
 
-The gallery writes actual runtime PNGs to `target/mote-gallery/`: twelve
-transparent sprites, a light gallery, a dark pose sheet and all three sizes.
-It also times 240 warm frames. The September art pass measured about 0.8 ms
-per frame in release; that excludes simulation and Windows presentation.
-The new Climber was observed on a real window edge. Extended multi-monitor
-and four-pet performance acceptance remain open in the build plan.
+The gallery writes runtime character, pose and size sheets plus renderer
+measurements to `target/mote-gallery`. Its timings exclude sensing, physics,
+presentation and the picker. The native self-test is a smoke check, not a
+substitute for observing desktop behaviour.
+
+## Privacy and limits
+
+Mote has no networking, analytics, telemetry, account or audio recording.
+Window geometry stays in memory; titles are not stored. Audio reactions use
+native playback information and an output volume scalar.
+
+The portable Windows build is unsigned. Mixed-DPI hotplug, Explorer restart,
+lock/resume and long-running multi-pet acceptance still require broader
+hardware coverage. The animals have a finite raster pose set; independent
+skeletal head/limb articulation, continuous flight and complex social play
+are not implemented. See the build plan for current verification boundaries.

@@ -18,7 +18,7 @@ pub mod world;
 pub use behaviour::{BehaviourState, Brain, DecisionContext, Intent, IntentKind};
 pub use personality::{Drives, Personality};
 pub use physics::{Body, PhysicsEvent, SimConfig, Vec2};
-pub use species::SpeciesId;
+pub use species::{Locomotion, MotionTraits, SpeciesId};
 pub use world::{MonitorRect, Support, SupportKind, VirtualRect, WallSide, WorldSnapshot};
 
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,13 @@ impl CreatureSim {
         );
 
         // 2. Ask the brain what to do.
-        let ctx = DecisionContext::from_sense(sense, &self.body, &self.drives, &self.personality);
+        let ctx = DecisionContext::from_sense_for_species(
+            sense,
+            &self.body,
+            &self.drives,
+            self.species,
+            &self.personality,
+        );
         let intent = self
             .brain
             .update(now_ms, dt, &ctx, &self.body, world, &self.drives);
@@ -98,7 +104,7 @@ impl CreatureSim {
 
         // 3. Convert the intent into locomotion targets for the physics body,
         //    then integrate.
-        apply_intent_to_body(&mut self.body, &intent, world, cfg, dt);
+        apply_intent_to_body(&mut self.body, &intent, world, cfg, dt, self.species);
         let events = self.body.integrate(dt, world, cfg);
 
         // 4. Let the brain observe physics outcomes (landing, losing support).
@@ -113,7 +119,8 @@ fn apply_intent_to_body(
     intent: &Intent,
     world: &WorldSnapshot,
     cfg: &SimConfig,
-    _dt: f32,
+    dt: f32,
+    species: SpeciesId,
 ) {
     use IntentKind as K;
     match intent.kind {
@@ -125,38 +132,72 @@ fn apply_intent_to_body(
         | K::Dance
         | K::ReactLoad
         | K::Peek => {
-            body.set_horizontal_target(None, cfg);
-            body.vel.y = 0.0;
+            body.set_horizontal_target_for_dt(None, cfg, dt);
+            // An airborne body receives Stay while the brain waits for
+            // physics to finish the arc. Do not erase gravity/jump velocity.
+            if body.grounded() {
+                body.vel.y = 0.0;
+            }
         }
         K::WalkTo | K::RunTo | K::ChaseCursor | K::WanderTo => {
+            let motion = species.motion();
             let speed = match intent.kind {
-                K::RunTo | K::ChaseCursor => cfg.run_speed,
+                K::RunTo | K::ChaseCursor if motion.can_run => cfg.run_speed,
                 _ => cfg.walk_speed,
-            };
+            } * motion.speed_scale;
             let dir = (intent.target_x - body.pos.x).signum();
             if intent.target_x.is_finite() && dir != 0.0 {
-                body.vel.x = dir * speed;
-                body.facing = if dir > 0.0 { 1 } else { -1 };
+                if matches!(motion.locomotion, Locomotion::Hop)
+                    && body.grounded()
+                    && matches!(intent.kind, K::WalkTo | K::WanderTo)
+                {
+                    // Rabbits and owls travel in small grounded hops instead
+                    // of sliding around like mammals.
+                    body.start_jump_toward_scaled(
+                        intent.target_x,
+                        body.pos.y,
+                        cfg,
+                        motion.jump_scale,
+                    );
+                } else {
+                    body.vel.x = dir * speed;
+                    body.facing = if dir > 0.0 { 1 } else { -1 };
+                }
             } else {
-                body.set_horizontal_target(None, cfg);
+                body.set_horizontal_target_for_dt(None, cfg, dt);
             }
         }
         K::AvoidCursor => {
             // Run away from the cursor horizontally on the current support.
+            let motion = species.motion();
             let dir = (body.pos.x - intent.target_x).signum();
             let dir = if dir == 0.0 { body.facing as f32 } else { dir };
-            body.vel.x = dir * cfg.run_speed;
+            body.vel.x =
+                dir * if motion.can_run {
+                    cfg.run_speed
+                } else {
+                    cfg.walk_speed
+                } * motion.speed_scale;
             body.facing = if dir > 0.0 { 1 } else { -1 };
         }
         K::JumpTo => {
+            let motion = species.motion();
+            if !motion.can_jump {
+                body.set_horizontal_target_for_dt(None, cfg, dt);
+                return;
+            }
             if let Some(id) = intent.target_surface {
                 if let Some(s) = world.support(id) {
-                    body.start_jump_toward(s.center_x(), s.y, cfg);
+                    body.start_jump_toward_scaled(s.center_x(), s.y, cfg, motion.jump_scale);
                 }
             }
             // Keep current horizontal velocity while airborne.
         }
         K::ClimbTo => {
+            if !species.motion().can_climb {
+                body.set_horizontal_target_for_dt(None, cfg, dt);
+                return;
+            }
             // Wall-climbing locomotion: if on a vertical wall, climb upward/downward.
             if let Some(id) = body.grounded_surface {
                 if let Some(s) = world.support(id) {
@@ -209,7 +250,12 @@ fn apply_intent_to_body(
                 }
             } else if let Some(id) = intent.target_surface {
                 if let Some(s) = world.support(id) {
-                    body.start_jump_toward(s.center_x(), s.y, cfg);
+                    body.start_jump_toward_scaled(
+                        s.center_x(),
+                        s.y,
+                        cfg,
+                        species.motion().jump_scale,
+                    );
                 }
             }
         }
@@ -243,4 +289,61 @@ pub struct SenseInput {
     pub media_playing: bool,
     pub fullscreen_app_active: bool,
     pub monitor_count: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn airborne_jump_velocity_survives_brain_stay_intent() {
+        let world = WorldSnapshot {
+            supports: vec![
+                Support {
+                    id: 1,
+                    kind: SupportKind::Taskbar,
+                    x1: 0.0,
+                    x2: 1920.0,
+                    y: 1040.0,
+                    y_bottom: 1040.0,
+                    monitor: 0,
+                    generation: 1,
+                    stable: true,
+                },
+                Support {
+                    id: 2,
+                    kind: SupportKind::Window,
+                    x1: 600.0,
+                    x2: 1000.0,
+                    y: 900.0,
+                    y_bottom: 900.0,
+                    monitor: 0,
+                    generation: 1,
+                    stable: true,
+                },
+            ],
+            virtual_rect: VirtualRect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            monitors: Vec::new(),
+            generation: 1,
+        };
+        let mut sim = CreatureSim::new_with_species(1, SpeciesId::Cat, 500.0, 1040.0, 0);
+        sim.body.grounded_surface = Some(1);
+        sim.brain.set_state(BehaviourState::Jumping, 0);
+        let cfg = SimConfig::default();
+        let sense = SenseInput::default();
+
+        sim.tick(0.016, 16, &sense, &world, &cfg);
+        assert!(!sim.body.grounded());
+        sim.tick(0.016, 32, &sense, &world, &cfg);
+        assert!(
+            sim.body.vel.y < -100.0,
+            "brain's airborne Stay must preserve the jump arc, got {}",
+            sim.body.vel.y
+        );
+    }
 }

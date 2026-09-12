@@ -17,13 +17,16 @@ use mote_win::{
 };
 use windows::core::w;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    RegisterHotKey, ReleaseCapture, SetCapture, UnregisterHotKey, MOD_ALT, MOD_CONTROL,
+    MOD_NOREPEAT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, GetWindowLongPtrW, KillTimer, PostQuitMessage,
     RegisterWindowMessageW, SetTimer, SetWindowLongPtrW, GWLP_USERDATA, HTCLIENT, HTTRANSPARENT,
-    PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, WM_CREATE, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCHITTEST,
-    WM_POWERBROADCAST, WM_RBUTTONUP, WM_TIMER,
+    PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, WM_CLOSE, WM_CREATE, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_NCHITTEST, WM_POWERBROADCAST, WM_RBUTTONUP, WM_TIMER,
 };
 
 use crate::overlay::{Overlay, OVERLAY_PX};
@@ -33,7 +36,8 @@ use mote_core::behaviour::AppCommand;
 
 const TICK_TIMER: usize = 1;
 const SLOW_TIMER: usize = 2;
-const TICK_MS: u32 = 16;
+const TICK_MS: u32 = 32;
+const HIDE_HOTKEY: i32 = 1;
 
 pub struct MoteInstance {
     pub id: u32,
@@ -82,11 +86,14 @@ pub struct App {
     hidden_manual: bool,
     hide_until_ms: u64,
     suspended: bool,
+    picker_open: bool,
+    cadence_ms: u32,
     last_cursor: (i32, i32),
 }
 
 impl App {
-    pub fn new(settings: Settings) -> Self {
+    pub fn new(mut settings: Settings) -> Self {
+        settings.set_lineup(settings.lineup());
         let start = Instant::now();
         let radius = settings.size.radius();
         let monitors = query_monitors();
@@ -108,12 +115,7 @@ impl App {
         let vr = &world.virtual_rect;
 
         for i in 0..count {
-            let species = if i == 0 {
-                settings.species
-            } else {
-                let idx = (((settings.species.index() as usize - 1 + i * 3) % 12) + 1) as u8;
-                SpeciesId::from_index(idx).unwrap_or(settings.species)
-            };
+            let species = settings.pets[i];
             let offset_x = (i as f32 - (count as f32 - 1.0) / 2.0) * 110.0;
             let spawn_x = (sx + offset_x).clamp(vr.x as f32 + 50.0, (vr.x + vr.w) as f32 - 50.0);
             let mut sim = CreatureSim::new_with_species(
@@ -167,6 +169,8 @@ impl App {
             hidden_manual: false,
             hide_until_ms: 0,
             suspended: false,
+            picker_open: false,
+            cadence_ms: TICK_MS,
             last_cursor: (sx as i32, sy as i32 - 200),
         }
     }
@@ -177,6 +181,15 @@ impl App {
 
     fn now_s(&self) -> f64 {
         self.start.elapsed().as_secs_f64()
+    }
+
+    fn set_cadence(&mut self, millis: u32) {
+        if self.cadence_ms != millis && !self.hwnd.0.is_null() {
+            self.cadence_ms = millis;
+            unsafe {
+                let _ = SetTimer(Some(self.hwnd), TICK_TIMER, millis, None);
+            }
+        }
     }
 
     fn create_instance_overlay(&self) -> Option<Overlay> {
@@ -207,8 +220,7 @@ impl App {
             let radius = self.settings.size.radius();
             while self.instances.len() < target_count {
                 let i = self.instances.len();
-                let idx = (((self.settings.species.index() as usize - 1 + i * 3) % 12) + 1) as u8;
-                let species = SpeciesId::from_index(idx).unwrap_or(self.settings.species);
+                let species = self.settings.pets[i];
                 let dir = if i % 2 == 1 { 1.0 } else { -1.0 };
                 let offset_x = (i as f32 * 90.0) * dir;
                 let vr = &self.world.virtual_rect;
@@ -256,28 +268,39 @@ impl App {
                 }
             }
         }
+        for inst in &self.instances {
+            if let Some(o) = &inst.overlay {
+                o.set_input_passthrough(self.settings.click_through);
+            }
+        }
     }
 
-    pub fn set_species(&mut self, species: SpeciesId) {
-        self.settings.species = species;
-        if !self.instances.is_empty() {
-            self.instances[0].species = species;
-            self.instances[0].sim.set_species(species);
-        }
-        for (i, inst) in self.instances.iter_mut().enumerate().skip(1) {
-            let idx = (((species.index() as usize - 1 + i * 3) % 12) + 1) as u8;
-            let s = SpeciesId::from_index(idx).unwrap_or(species);
-            inst.species = s;
-            inst.sim.set_species(s);
+    pub fn set_lineup(&mut self, pets: Vec<SpeciesId>) {
+        self.settings.set_lineup(pets);
+        self.sync_mote_count();
+        for (inst, &species) in self.instances.iter_mut().zip(&self.settings.pets) {
+            if inst.species != species {
+                inst.species = species;
+                inst.sim.set_species(species);
+                inst.animator = Animator::new(self.settings.size.radius());
+                inst.presented_frame.clear();
+            }
         }
         if let Some(t) = self.tray.as_mut() {
-            t.update_species(species);
+            t.update_species(self.settings.species);
         }
     }
 
-    pub fn set_mote_count(&mut self, count: u32) {
-        self.settings.mote_count = count.clamp(1, 4);
-        self.sync_mote_count();
+    pub fn open_picker(&mut self) {
+        match crate::picker::show_picker(
+            self.hwnd,
+            self.settings.lineup(),
+            self.settings.quiet(),
+            self.settings.reduce_motion,
+        ) {
+            Ok(()) => self.picker_open = true,
+            Err(e) => log::error!("could not open pet picker: {e}"),
+        }
     }
 
     /// Called once the initial overlay window exists.
@@ -291,6 +314,16 @@ impl App {
         unsafe {
             let _ = SetTimer(Some(hwnd), TICK_TIMER, TICK_MS, None);
             let _ = SetTimer(Some(hwnd), SLOW_TIMER, 1000, None);
+            if RegisterHotKey(
+                Some(hwnd),
+                HIDE_HOTKEY,
+                MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+                b'M' as u32,
+            )
+            .is_err()
+            {
+                log::warn!("Ctrl+Alt+M already in use; hide remains available from the tray");
+            }
         }
         self.sync_mote_count();
         self.cpu.sample();
@@ -353,7 +386,7 @@ impl App {
         let user_active = idle_capped < 5_000;
 
         // --- Audio at ~10 Hz.
-        if now_s - self.last_audio_poll_s > 0.1 {
+        if self.settings.music_reactions && now_s - self.last_audio_poll_s > 0.1 {
             self.last_audio_poll_s = now_s;
             self.audio.poll(now_s);
         }
@@ -379,7 +412,13 @@ impl App {
                 }
             }
         }
-        if self.fullscreen_paused {
+        if self.fullscreen_paused || self.hidden_manual || self.picker_open {
+            for inst in &self.instances {
+                if let Some(o) = &inst.overlay {
+                    o.set_visible(false);
+                }
+            }
+            self.set_cadence(250);
             return;
         }
 
@@ -533,10 +572,8 @@ impl App {
 
             // --- Render cadence: 30 fps awake, ~7 fps asleep, none when hidden.
             let sleeping = inst.sim.brain.state == BehaviourState::Sleep;
-            let want_frame = !hidden
-                && (state_changed
-                    || (!sleeping && self.tick_count.is_multiple_of(2))
-                    || (sleeping && self.tick_count.is_multiple_of(8)));
+            let want_frame =
+                !hidden && (state_changed || !sleeping || self.tick_count.is_multiple_of(2));
             if want_frame {
                 let pose = inst.animator.pose(&anim_in);
                 let frame = mote_render::creature::draw_mote(&pose);
@@ -563,6 +600,18 @@ impl App {
                 }
             }
         }
+
+        self.set_cadence(
+            if self
+                .instances
+                .iter()
+                .all(|i| i.sim.brain.state == BehaviourState::Sleep)
+            {
+                64
+            } else {
+                TICK_MS
+            },
+        );
 
         // --- Tray tip refresh every ~5 s.
         if self.tick_count.is_multiple_of(300) {
@@ -591,6 +640,36 @@ impl App {
         lparam: LPARAM,
     ) -> Option<LRESULT> {
         match msg {
+            WM_CLOSE => {
+                self.apply_menu_action(MenuAction::Quit);
+                Some(LRESULT(0))
+            }
+            crate::picker::WM_APP_OPEN_PICKER => {
+                self.open_picker();
+                Some(LRESULT(0))
+            }
+            crate::picker::WM_APP_PICKER_RESULT => {
+                if let Some(result) = crate::picker::take_result(self.hwnd) {
+                    self.picker_open = false;
+                    if !result.cancelled {
+                        self.set_lineup(result.pets);
+                        if self.settings.quiet() != result.quiet {
+                            self.settings.set_quiet(result.quiet);
+                        }
+                        self.settings.reduce_motion = result.reduced_motion;
+                        self.hidden_manual = false;
+                        self.hide_until_ms = 0;
+                        self.rebuild_world();
+                        save_settings(&self.settings);
+                    }
+                    self.last_tick = Instant::now();
+                }
+                Some(LRESULT(0))
+            }
+            WM_HOTKEY if wparam.0 == HIDE_HOTKEY as usize => {
+                self.apply_menu_action(MenuAction::HideShow);
+                Some(LRESULT(0))
+            }
             WM_TIMER => {
                 match wparam.0 {
                     TICK_TIMER => self.tick(),
@@ -658,6 +737,13 @@ impl App {
 
     // -- Hit testing: only the creature's body is "solid". -----------------
     fn hit_test(&self, hwnd: HWND, lparam: LPARAM) -> LRESULT {
+        if self.settings.click_through
+            || self.picker_open
+            || self.hidden_manual
+            || self.fullscreen_paused
+        {
+            return LRESULT(HTTRANSPARENT as isize);
+        }
         let x = (lparam.0 & 0xFFFF) as i16 as i32;
         let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
         if let Some(inst) = self
@@ -809,25 +895,22 @@ impl App {
     fn on_tray_event(&mut self, lparam: LPARAM) {
         match lparam.0 as u32 {
             WM_RBUTTONUP => self.on_context_menu(),
-            WM_LBUTTONDBLCLK => {
-                // Double-click the tray icon: call Motes to the cursor.
-                self.hidden_manual = false;
-                let (cx, _) = self.last_cursor;
-                let count = self.instances.len() as f32;
-                for (idx, inst) in self.instances.iter_mut().enumerate() {
-                    let offset = (idx as f32 - (count - 1.0) / 2.0) * 80.0;
-                    inst.sim.brain.command = Some(AppCommand::ComeHere {
-                        x: cx as f32 + offset,
-                        y: 0.0,
-                    });
-                }
-            }
+            WM_LBUTTONDBLCLK => self.open_picker(),
             _ => {}
         }
     }
 
     fn apply_menu_action(&mut self, a: MenuAction) {
         match a {
+            MenuAction::ChoosePets => self.open_picker(),
+            MenuAction::ToggleClickThrough => {
+                self.settings.click_through = !self.settings.click_through;
+                for inst in &self.instances {
+                    if let Some(o) = &inst.overlay {
+                        o.set_input_passthrough(self.settings.click_through);
+                    }
+                }
+            }
             MenuAction::SleepWake => {
                 let any_awake = self
                     .instances
@@ -860,12 +943,6 @@ impl App {
                     });
                 }
             }
-            MenuAction::SelectSpecies(species) => {
-                self.set_species(species);
-            }
-            MenuAction::SetMoteCount(count) => {
-                self.set_mote_count(count);
-            }
             MenuAction::SizeSmall => self.set_size(crate::settings::CreatureSize::Small),
             MenuAction::SizeMedium => self.set_size(crate::settings::CreatureSize::Medium),
             MenuAction::SizeLarge => self.set_size(crate::settings::CreatureSize::Large),
@@ -894,7 +971,9 @@ impl App {
             }
             MenuAction::Quit => {
                 save_settings(&self.settings);
+                crate::picker::close_picker(self.hwnd);
                 unsafe {
+                    let _ = UnregisterHotKey(Some(self.hwnd), HIDE_HOTKEY);
                     let _ = KillTimer(Some(self.hwnd), TICK_TIMER);
                     let _ = KillTimer(Some(self.hwnd), SLOW_TIMER);
                     PostQuitMessage(0);
@@ -1075,141 +1154,59 @@ mod tests {
     }
 
     #[test]
-    fn multi_mote_instance_count_sync() {
-        let s = Settings {
-            mote_count: 3,
-            ..Default::default()
-        };
-        let mut app = App::new(s);
-        assert_eq!(app.instances.len(), 3);
-        assert_eq!(app.instances[0].species, SpeciesId::Peeker);
-
-        // Shrink to 1
-        app.set_mote_count(1);
+    fn explicit_lineup_resizes_and_preserves_selected_order() {
+        let mut app = App::new(Settings::default());
+        app.set_lineup(vec![SpeciesId::Owl, SpeciesId::Rabbit, SpeciesId::Cat]);
+        assert_eq!(
+            app.instances.iter().map(|i| i.species).collect::<Vec<_>>(),
+            vec![SpeciesId::Owl, SpeciesId::Rabbit, SpeciesId::Cat]
+        );
+        app.set_lineup(vec![SpeciesId::Tortoise]);
         assert_eq!(app.instances.len(), 1);
-
-        // Clamped at max 4
-        app.set_mote_count(10);
-        assert_eq!(app.settings.mote_count, 4);
+        assert_eq!(app.instances[0].sim.species, SpeciesId::Tortoise);
+        assert_eq!(app.settings.mote_count, 1);
     }
 
     #[test]
-    fn species_selection_updates_cohort() {
-        let s = Settings {
-            mote_count: 2,
+    fn startup_uses_saved_individual_pets() {
+        let app = App::new(Settings {
+            pets: vec![
+                SpeciesId::Fox,
+                SpeciesId::Owl,
+                SpeciesId::Dog,
+                SpeciesId::Rabbit,
+            ],
             ..Default::default()
-        };
-        let mut app = App::new(s);
-        assert_eq!(app.instances[0].species, SpeciesId::Peeker);
-
-        app.set_species(SpeciesId::Climber);
-        assert_eq!(app.settings.species, SpeciesId::Climber);
-        assert_eq!(app.instances[0].species, SpeciesId::Climber);
-        assert_eq!(app.instances[0].sim.species, SpeciesId::Climber);
+        });
+        assert_eq!(
+            app.instances.iter().map(|i| i.species).collect::<Vec<_>>(),
+            app.settings.pets
+        );
+        assert_eq!(app.instances.len(), 4);
     }
 
     #[test]
-    fn inter_mote_cohabitation_gaze() {
-        // Gaze toward another mote at (300, 200) from (200, 200) should be to the right
+    fn inter_pet_gaze_is_correct() {
         let (gx, gy) = compute_gaze(300.0, 200.0, 200.0, 200.0);
         assert!(gx > 0.5);
         assert!(gy.abs() < 0.01);
     }
 
     #[test]
-    fn cohort_species_modular_arithmetic_covers_all_bases() {
-        for &base in SpeciesId::all() {
-            let base_idx = base.index() as usize;
-            for i in 0..4 {
-                let idx = (((base_idx - 1 + i * 3) % 12) + 1) as u8;
-                assert!(
-                    (1..=12).contains(&idx),
-                    "idx must be 1..=12, got {} for base {:?}",
-                    idx,
-                    base
-                );
-                assert!(
-                    SpeciesId::from_index(idx).is_some(),
-                    "SpeciesId::from_index({}) must succeed",
-                    idx
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn startup_pack_creates_unique_cohort_species() {
-        let s = Settings {
-            species: SpeciesId::RingTail,
-            mote_count: 4,
-            ..Default::default()
-        };
-        let app = App::new(s);
-        assert_eq!(app.instances.len(), 4);
-        assert_eq!(app.instances[0].species, SpeciesId::RingTail);
-        assert_eq!(app.instances[1].species, SpeciesId::Kaiju); // 9 + 3 = 12 The Kaiju!
-        assert_eq!(app.instances[2].species, SpeciesId::Loaf); // 12 + 3 = 3 The Loaf!
-        assert_eq!(app.instances[3].species, SpeciesId::Heavy); // 3 + 3 = 6 The Heavy!
-
-        // All 4 species must be unique
-        let mut seen = std::collections::HashSet::new();
-        for inst in &app.instances {
-            assert!(
-                seen.insert(inst.species),
-                "Duplicate species {:?}",
-                inst.species
-            );
-        }
-    }
-
-    #[test]
-    fn peeking_below_window_ledge_is_click_through() {
-        let mut app = App::new(Settings::default());
-        let hwnd = HWND(0x1234 as *mut std::ffi::c_void);
-        app.instances[0].overlay = Some(Overlay::dummy(hwnd));
-        app.instances[0].sim.body.pos.x = 500.0;
-        app.instances[0].sim.body.pos.y = 400.0;
-        app.instances[0].presented_origin = (372, 194);
-        app.instances[0].presented_frame = mote_render::draw_mote(&mote_render::creature::Pose {
-            is_peeking: true,
-            hop_px: 40.0,
-            ..Default::default()
-        });
-        app.instances[0]
-            .sim
-            .brain
-            .set_state(BehaviourState::Peeking, 0);
-
-        // Click at y = 410 (below window top ledge at 400.0):
-        // Must be HTTRANSPARENT so the underlying window receives clicks!
-        let lparam_below = LPARAM(((410 << 16) | 500) as isize);
-        let hit_below = app.hit_test(hwnd, lparam_below);
-        assert_eq!(hit_below.0, HTTRANSPARENT as isize);
-
-        // Click at y = 370 (above window top ledge where peeking head/horns are):
-        // Must be HTCLIENT so the peeking pet can be petted/clicked!
-        let lparam_above = LPARAM(((370 << 16) | 500) as isize);
-        let hit_above = app.hit_test(hwnd, lparam_above);
-        assert_eq!(hit_above.0, HTCLIENT as isize);
-
-        let _ = app.instances[0].overlay.take().map(std::mem::forget);
-    }
-
-    #[test]
-    fn artwork_hit_testing_respects_ring_hole_on_negative_monitor_coordinates() {
+    fn alpha_hit_testing_and_ignore_mouse_on_negative_monitor() {
         let mut app = App::new(Settings::default());
         let hwnd = HWND(0x1234 as *mut std::ffi::c_void);
         let inst = &mut app.instances[0];
         inst.overlay = Some(Overlay::dummy(hwnd));
         inst.presented_origin = (-200, -200);
-        inst.presented_frame = mote_render::draw_mote(&mote_render::creature::Pose {
-            species: SpeciesId::RingTail,
-            ..Default::default()
-        });
+        inst.presented_frame = vec![0; mote_render::SPRITE_PX * mote_render::SPRITE_PX * 4];
+        inst.presented_frame[(100 * mote_render::SPRITE_PX + 100) * 4 + 3] = 255;
         let at = |x: i32, y: i32| LPARAM((((y as u16 as u32) << 16) | x as u16 as u32) as isize);
-        assert_eq!(app.hit_test(hwnd, at(-77, -127)).0, HTTRANSPARENT as isize);
-        assert_eq!(app.hit_test(hwnd, at(-77, -147)).0, HTCLIENT as isize);
+        assert_eq!(app.hit_test(hwnd, at(-100, -100)).0, HTCLIENT as isize);
+        assert_eq!(app.hit_test(hwnd, at(-101, -100)).0, HTTRANSPARENT as isize);
         assert_eq!(app.hit_test(hwnd, at(-210, -210)).0, HTTRANSPARENT as isize);
+        app.settings.click_through = true;
+        assert_eq!(app.hit_test(hwnd, at(-100, -100)).0, HTTRANSPARENT as isize);
         let _ = app.instances[0].overlay.take().map(std::mem::forget);
     }
 }

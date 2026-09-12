@@ -20,6 +20,7 @@ const EXCLUDED_CLASSES: &[&str] = &[
     "Progman",                    // desktop wallpaper root
     "WorkerW",                    // desktop wallpaper worker
     "MoteOverlay",                // our own overlay window
+    "MotePetPicker",              // selection is not part of the pet world
     "Windows.UI.Core.CoreWindow", // start menu / search host shell bits — case by case
 ];
 

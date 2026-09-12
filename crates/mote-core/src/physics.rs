@@ -68,6 +68,10 @@ pub struct Body {
     /// -1 facing left, +1 facing right.
     pub facing: i8,
     pub grounded_surface: Option<u64>,
+    /// Last horizontal-support anchor used to carry the body with a moving
+    /// window. Missing on older serialized bodies and rebuilt on first tick.
+    #[serde(default)]
+    pub support_anchor: Option<Vec2>,
     pub airborne_time_s: f32,
     /// Approximate body width used for edge detection.
     pub half_width: f32,
@@ -80,6 +84,7 @@ impl Body {
             vel: Vec2::ZERO,
             facing: 1,
             grounded_surface: None,
+            support_anchor: None,
             airborne_time_s: 0.0,
             half_width: 16.0,
         }
@@ -90,8 +95,18 @@ impl Body {
     }
 
     pub fn set_horizontal_target(&mut self, _target: Option<f32>, cfg: &SimConfig) {
+        self.set_horizontal_target_for_dt(_target, cfg, 1.0 / 60.0);
+    }
+
+    /// Stop horizontal movement using the actual simulation timestep.
+    ///
+    /// The original implementation used a fixed 60 Hz step, which made a
+    /// pet take noticeably longer to stop when the app was running at a
+    /// lower update rate. Keep the old method for callers outside the crate,
+    /// while the simulation uses this frame-rate-independent variant.
+    pub fn set_horizontal_target_for_dt(&mut self, _target: Option<f32>, cfg: &SimConfig, dt: f32) {
         // Friction-stop: decay horizontal velocity toward zero.
-        let f = cfg.ground_friction * (1.0 / 60.0);
+        let f = cfg.ground_friction * dt.max(0.0);
         if self.vel.x.abs() <= f {
             self.vel.x = 0.0;
         } else {
@@ -103,6 +118,12 @@ impl Body {
     /// that roughly reaches the target and a vertical velocity scaled by the
     /// height difference. Deterministic, no randomness.
     pub fn start_jump_toward(&mut self, tx: f32, ty: f32, cfg: &SimConfig) {
+        self.start_jump_toward_scaled(tx, ty, cfg, 1.0);
+    }
+
+    /// Begin a jump with a species-specific impulse multiplier.
+    pub fn start_jump_toward_scaled(&mut self, tx: f32, ty: f32, cfg: &SimConfig, jump_scale: f32) {
+        let jump_scale = jump_scale.clamp(0.0, 1.5);
         let dx = tx - self.pos.x;
         let dy = ty - self.pos.y; // negative = upward
         let dist = dx.abs().clamp(20.0, cfg.max_jump_dist);
@@ -110,12 +131,15 @@ impl Body {
         let t = (dist / cfg.run_speed).clamp(0.35, 0.8);
         let vx = (dx / t).clamp(-cfg.run_speed * 1.15, cfg.run_speed * 1.15);
         // y(t) = y0 + vy*t + g/2 t^2  =>  vy = (dy - g/2 t^2)/t
-        let vy = ((dy - 0.5 * cfg.gravity_px_s2 * t * t) / t)
-            .clamp(-cfg.jump_velocity * 1.2, cfg.jump_velocity * 0.4);
+        let vy = ((dy - 0.5 * cfg.gravity_px_s2 * t * t) / t).clamp(
+            -cfg.jump_velocity * 1.2 * jump_scale,
+            cfg.jump_velocity * 0.4 * jump_scale,
+        );
         self.vel.x = vx;
-        self.vel.y = vy.min(-220.0);
+        self.vel.y = vy.min(-220.0 * jump_scale);
         self.facing = if vx >= 0.0 { 1 } else { -1 };
         self.grounded_surface = None;
+        self.support_anchor = None;
         self.airborne_time_s = 0.0;
     }
 
@@ -123,6 +147,7 @@ impl Body {
         self.vel.x = vx.clamp(-1200.0, 1200.0);
         self.vel.y = vy.clamp(-1200.0, 600.0);
         self.grounded_surface = None;
+        self.support_anchor = None;
         self.airborne_time_s = 0.0;
     }
 
@@ -140,22 +165,35 @@ impl Body {
         if let Some(id) = self.grounded_surface {
             match world.support(id) {
                 Some(s) if s.is_wall() => {
+                    self.support_anchor = Some(Vec2::new(s.x1, s.y));
                     self.pos.x = s.x1;
                     let min_y = s.y.min(s.y_bottom);
                     let max_y = s.y.max(s.y_bottom);
                     if self.pos.y < min_y - 20.0 || self.pos.y > max_y + 20.0 {
                         self.grounded_surface = None;
+                        self.support_anchor = None;
                         self.airborne_time_s = 0.0;
                         events.push(PhysicsEvent::SupportLost { surface: id });
                     }
                 }
                 Some(s) => {
+                    // A dragged window carries a grounded pet horizontally
+                    // as well as vertically. The anchor is rebuilt after a
+                    // landing or direct placement, so this remains safe for
+                    // old serialized bodies.
+                    let anchor = Vec2::new(s.x1, s.y);
+                    if let Some(previous) = self.support_anchor {
+                        self.pos.x += anchor.x - previous.x;
+                        self.pos.y += anchor.y - previous.y;
+                    }
+                    self.support_anchor = Some(anchor);
                     // Support moved away horizontally or vertically?
                     if self.pos.x < s.x1 - self.half_width
                         || self.pos.x > s.x2 + self.half_width
                         || (self.pos.y - s.y).abs() > cfg.ground_snap + 14.0
                     {
                         self.grounded_surface = None;
+                        self.support_anchor = None;
                         self.airborne_time_s = 0.0;
                         events.push(PhysicsEvent::SupportLost { surface: id });
                     } else {
@@ -165,6 +203,7 @@ impl Body {
                 }
                 None => {
                     self.grounded_surface = None;
+                    self.support_anchor = None;
                     self.airborne_time_s = 0.0;
                     events.push(PhysicsEvent::SupportLost { surface: id });
                 }
@@ -202,6 +241,7 @@ impl Body {
                         let overhang = 6.0;
                         if self.pos.x < s.x1 - overhang || self.pos.x > s.x2 + overhang {
                             self.grounded_surface = None;
+                            self.support_anchor = None;
                             self.airborne_time_s = 0.0001;
                             events.push(PhysicsEvent::FellOffEdge { surface: id });
                         }
@@ -246,6 +286,7 @@ impl Body {
                     // virtual screen with no taskbar, still land.
                     self.pos.y = s.y;
                     self.grounded_surface = Some(s.id);
+                    self.support_anchor = Some(Vec2::new(s.x1, s.y));
                     let impact = self.vel.y;
                     self.vel.y = 0.0;
                     self.vel.x *= 0.35; // landing scrub
@@ -266,10 +307,12 @@ impl Body {
                     self.pos.x = self.pos.x.clamp(s.x1, s.x2);
                     self.pos.y = s.y;
                     self.grounded_surface = Some(s.id);
+                    self.support_anchor = Some(Vec2::new(s.x1, s.y));
                     self.vel = Vec2::ZERO;
                     events.push(PhysicsEvent::Recovered { surface: s.id });
                 } else {
                     self.pos.y = bottom - 2.0;
+                    self.support_anchor = None;
                     self.vel = Vec2::ZERO;
                     events.push(PhysicsEvent::Recovered { surface: u64::MAX });
                 }
@@ -445,6 +488,23 @@ mod tests {
     }
 
     #[test]
+    fn rides_horizontally_moving_support() {
+        let mut world = flat_world();
+        world.supports[0].x1 = 300.0;
+        world.supports[0].x2 = 2220.0;
+        let cfg = SimConfig::default();
+        let mut b = Body::new(500.0, 1040.0);
+        b.grounded_surface = Some(1);
+        // Establish the previous support anchor.
+        b.integrate(1.0 / 60.0, &world, &cfg);
+        world.supports[0].x1 += 120.0;
+        world.supports[0].x2 += 120.0;
+        b.integrate(1.0 / 60.0, &world, &cfg);
+        assert!((b.pos.x - 620.0).abs() < 0.01);
+        assert!(b.grounded());
+    }
+
+    #[test]
     fn jump_toward_reaches_nearby_ledge() {
         let world = WorldSnapshot {
             supports: vec![
@@ -545,5 +605,15 @@ mod tests {
             (b.pos.x, b.pos.y)
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn horizontal_friction_uses_elapsed_time() {
+        let cfg = SimConfig::default();
+        let mut b = Body::new(0.0, 0.0);
+        b.vel.x = 500.0;
+        b.set_horizontal_target_for_dt(None, &cfg, 0.1);
+        // 500 - 1400 * 0.1, rather than the old fixed 1/60 decrement.
+        assert!((b.vel.x - 360.0).abs() < f32::EPSILON);
     }
 }

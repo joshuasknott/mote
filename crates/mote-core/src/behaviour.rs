@@ -13,6 +13,7 @@
 
 use crate::personality::{Drives, Personality};
 use crate::physics::Body;
+use crate::species::SpeciesId;
 use crate::world::{SupportKind, WorldSnapshot};
 use crate::SenseInput;
 use serde::{Deserialize, Serialize};
@@ -151,11 +152,23 @@ pub struct DecisionContext {
     pub grounded: bool,
     pub near_edge: bool,
     pub edge_side: i8,
+    /// Species-specific movement constraints used when scoring behaviours.
+    pub species: SpeciesId,
     pub personality: Personality,
 }
 
 impl DecisionContext {
     pub fn from_sense(s: &SenseInput, body: &Body, _drives: &Drives, p: &Personality) -> Self {
+        Self::from_sense_for_species(s, body, _drives, SpeciesId::default(), p)
+    }
+
+    pub fn from_sense_for_species(
+        s: &SenseInput,
+        body: &Body,
+        _drives: &Drives,
+        species: SpeciesId,
+        p: &Personality,
+    ) -> Self {
         let dx = s.cursor_x - body.pos.x;
         let dy = s.cursor_y - body.pos.y;
         let dist = (dx * dx + dy * dy).sqrt();
@@ -178,6 +191,7 @@ impl DecisionContext {
             grounded: body.grounded(),
             near_edge: false,
             edge_side: 0,
+            species,
             personality: *p,
         }
     }
@@ -313,9 +327,18 @@ impl Brain {
                 }
                 AppCommand::ComeHere { x, .. } => {
                     self.current_target_x = Some(x);
-                    self.set_state(BehaviourState::Run, now_ms);
+                    let state = if ctx.species.motion().can_run {
+                        BehaviourState::Run
+                    } else {
+                        BehaviourState::Walk
+                    };
+                    self.set_state(state, now_ms);
                     return Intent {
-                        kind: IntentKind::RunTo,
+                        kind: if ctx.species.motion().can_run {
+                            IntentKind::RunTo
+                        } else {
+                            IntentKind::WalkTo
+                        },
                         target_x: x,
                         target_y: f32::NAN,
                         target_surface: None,
@@ -328,6 +351,20 @@ impl Brain {
         }
         if let Some(f) = self.forced_state.take() {
             self.set_state(f, now_ms);
+        }
+
+        // A command or restored state must not bypass an animal's physical
+        // limits. Voluntary climbing/jumping/running is species-gated here,
+        // with a quiet walk as the safe fallback.
+        let motion = ctx.species.motion();
+        if (self.state == BehaviourState::Climbing && !motion.can_climb)
+            || (self.state == BehaviourState::Jumping && !motion.can_jump)
+            || (matches!(
+                self.state,
+                BehaviourState::Run | BehaviourState::ChaseCursor
+            ) && !motion.can_run)
+        {
+            self.set_state(BehaviourState::Walk, now_ms);
         }
 
         // 1. Airborne states are physics-driven; don't re-decide mid-air.
@@ -351,7 +388,8 @@ impl Brain {
         // 2. Reactive interrupts (checked every tick, bypass min-duration
         //    only for genuinely urgent things).
         if self.state != BehaviourState::Dragged {
-            // Fast cursor approach -> startle (scaled by skittishness; unflappable creatures like Kaiju stay calm).
+            // Fast cursor approach -> startle (scaled by skittishness;
+            // unflappable animals such as tortoises stay calm).
             let startle_dist = 130.0 + ctx.personality.skittishness * 140.0;
             if ctx.cursor_approaching_fast
                 && ctx.cursor_dist < startle_dist
@@ -459,6 +497,7 @@ impl Brain {
         world: &WorldSnapshot,
         drives: &Drives,
     ) -> BehaviourState {
+        let motion = ctx.species.motion();
         // Sleeping persists until woken.
         if self.state == BehaviourState::Sleep {
             return BehaviourState::Sleep;
@@ -530,7 +569,9 @@ impl Brain {
 
         // Cursor play: chase occasionally when bored + cursor near & slow;
         // avoid when cursor very close and fast handled above, or when idle.
-        if !ctx.fullscreen
+        if motion.can_chase_cursor
+            && ctx.user_active
+            && !ctx.fullscreen
             && !self.on_cooldown(BehaviourState::ChaseCursor, now_ms)
             && ctx.cursor_dist < 420.0
             && ctx.cursor_speed < 500.0
@@ -599,7 +640,7 @@ impl Brain {
         }
 
         // Wall climbing: when near a vertical window wall and bold/curious.
-        if !self.on_cooldown(BehaviourState::Climbing, now_ms) {
+        if motion.can_climb && !self.on_cooldown(BehaviourState::Climbing, now_ms) {
             if let Some(wall) = world.wall_near(body.pos.x, body.pos.y, 60.0) {
                 if body.pos.y > wall.y + 20.0 {
                     let climb_w = 0.40
@@ -616,11 +657,12 @@ impl Brain {
             .jump_targets(
                 (body.pos.x, body.pos.y),
                 body.grounded_surface,
-                300.0,
-                165.0,
+                motion.jump_reach_px,
+                motion.jump_height_px,
             )
             .is_empty();
-        if has_targets
+        if motion.can_jump
+            && has_targets
             && drives.boredom > 0.5
             && drives.energy > 0.4
             && now_ms - self.last_jump_ms > 12_000
@@ -717,7 +759,11 @@ impl Brain {
                         return Intent::stay();
                     }
                     return Intent {
-                        kind: IntentKind::RunTo,
+                        kind: if ctx.species.motion().can_run {
+                            IntentKind::RunTo
+                        } else {
+                            IntentKind::WalkTo
+                        },
                         target_x: x,
                         target_y: f32::NAN,
                         target_surface: None,
@@ -726,7 +772,11 @@ impl Brain {
                 let x = self.pick_stroll_target(body, world, true);
                 self.current_target_x = Some(x);
                 Intent {
-                    kind: IntentKind::RunTo,
+                    kind: if ctx.species.motion().can_run {
+                        IntentKind::RunTo
+                    } else {
+                        IntentKind::WalkTo
+                    },
                     target_x: x,
                     target_y: f32::NAN,
                     target_surface: None,
@@ -769,11 +819,15 @@ impl Brain {
                 target_surface: None,
             },
             BehaviourState::Jumping => {
+                if !ctx.species.motion().can_jump {
+                    self.set_state_time_only(BehaviourState::Walk);
+                    return Intent::walk_to(self.pick_stroll_target(body, world, false));
+                }
                 let targets = world.jump_targets(
                     (body.pos.x, body.pos.y),
                     body.grounded_surface,
-                    300.0,
-                    165.0,
+                    ctx.species.motion().jump_reach_px,
+                    ctx.species.motion().jump_height_px,
                 );
                 if let Some(t) = targets.into_iter().next() {
                     self.current_target_surface = Some(t.id);
@@ -899,6 +953,7 @@ mod tests {
             grounded: true,
             near_edge: false,
             edge_side: 0,
+            species: crate::species::SpeciesId::Cat,
             personality: Personality::default(),
         }
     }
@@ -1068,41 +1123,43 @@ mod tests {
     }
 
     #[test]
-    fn kaiju_unflappable_does_not_startle_and_shadow_startles() {
+    fn tortoise_unflappable_does_not_startle_and_rabbit_startles() {
         let world = test_world();
         let mut body = Body::new(500.0, 1040.0);
         body.grounded_surface = Some(1);
         let drives = Drives::default();
 
-        // 12 Kaiju has skittishness 0.05 (unflappable)
+        // Tortoise has low skittishness (unflappable).
         let mut kaiju_brain = Brain::new(0);
         let mut kaiju_ctx = idle_ctx();
-        kaiju_ctx.personality = crate::species::SpeciesId::Kaiju.default_personality();
+        kaiju_ctx.species = crate::species::SpeciesId::Tortoise;
+        kaiju_ctx.personality = crate::species::SpeciesId::Tortoise.default_personality();
         kaiju_ctx.cursor_approaching_fast = true;
         kaiju_ctx.cursor_dist = 180.0;
         kaiju_brain.update(5_000, 0.016, &kaiju_ctx, &body, &world, &drives);
         assert_ne!(
             kaiju_brain.state,
             BehaviourState::Startled,
-            "Kaiju should be unflappable and not startle"
+            "Tortoise should be unflappable and not startle"
         );
 
-        // 11 Shadow has skittishness 0.95 (very skittish)
+        // Rabbit has a very skittish personality.
         let mut shadow_brain = Brain::new(0);
         let mut shadow_ctx = idle_ctx();
-        shadow_ctx.personality = crate::species::SpeciesId::Shadow.default_personality();
+        shadow_ctx.species = crate::species::SpeciesId::Rabbit;
+        shadow_ctx.personality = crate::species::SpeciesId::Rabbit.default_personality();
         shadow_ctx.cursor_approaching_fast = true;
         shadow_ctx.cursor_dist = 180.0;
         shadow_brain.update(5_000, 0.016, &shadow_ctx, &body, &world, &drives);
         assert_eq!(
             shadow_brain.state,
             BehaviourState::Startled,
-            "Shadow should be skittish and startle"
+            "Rabbit should be skittish and startle"
         );
     }
 
     #[test]
-    fn climber_boldness_triggers_wall_climbing() {
+    fn fox_boldness_triggers_wall_climbing() {
         use crate::world::WallSide;
         let mut world = test_world();
         world.supports.push(Support {
@@ -1131,7 +1188,8 @@ mod tests {
 
         let mut climber_brain = Brain::new(0);
         let mut climber_ctx = idle_ctx();
-        climber_ctx.personality = crate::species::SpeciesId::Climber.default_personality();
+        climber_ctx.species = crate::species::SpeciesId::Fox;
+        climber_ctx.personality = crate::species::SpeciesId::Fox.default_personality();
         let drives = Drives {
             curiosity: 0.8,
             boredom: 0.2,
@@ -1145,13 +1203,13 @@ mod tests {
         assert_eq!(
             climber_brain.state,
             BehaviourState::Climbing,
-            "Climber near wall should choose climbing"
+            "Fox near wall should choose climbing"
         );
         assert_eq!(intent.kind, IntentKind::ClimbTo);
     }
 
     #[test]
-    fn peeker_curious_on_window_chooses_peeking() {
+    fn cat_curious_on_window_chooses_peeking() {
         let mut world = test_world();
         world.supports.push(Support {
             id: 20,
@@ -1169,7 +1227,8 @@ mod tests {
 
         let mut peeker_brain = Brain::new(0);
         let mut peeker_ctx = idle_ctx();
-        peeker_ctx.personality = crate::species::SpeciesId::Peeker.default_personality();
+        peeker_ctx.species = crate::species::SpeciesId::Cat;
+        peeker_ctx.personality = crate::species::SpeciesId::Cat.default_personality();
         let drives = Drives {
             curiosity: 0.85,
             energy: 0.7,
@@ -1181,13 +1240,13 @@ mod tests {
         assert_eq!(
             peeker_brain.state,
             BehaviourState::Peeking,
-            "Peeker on window should choose peeking"
+            "Cat on window should choose peeking"
         );
         assert_eq!(intent.kind, IntentKind::Peek);
     }
 
     #[test]
-    fn ringtail_lazy_on_window_curls_into_nap() {
+    fn fox_lazy_on_window_curls_into_nap() {
         let mut world = test_world();
         world.supports.push(Support {
             id: 20,
@@ -1205,7 +1264,8 @@ mod tests {
 
         let mut ringtail_brain = Brain::new(0);
         let mut ringtail_ctx = idle_ctx();
-        ringtail_ctx.personality = crate::species::SpeciesId::RingTail.default_personality();
+        ringtail_ctx.species = crate::species::SpeciesId::Fox;
+        ringtail_ctx.personality = crate::species::SpeciesId::Fox.default_personality();
         let drives = Drives {
             sleepiness: 0.5,
             energy: 0.4,
@@ -1219,7 +1279,7 @@ mod tests {
         assert_eq!(
             ringtail_brain.state,
             BehaviourState::Sleep,
-            "RingTail on window should curl up to sleep"
+            "Fox on window should curl up to sleep"
         );
         assert_eq!(intent.kind, IntentKind::Sleep);
     }
@@ -1247,7 +1307,7 @@ mod tests {
         let sense = crate::SenseInput::default();
         let mut sim = crate::CreatureSim::new_with_species(
             1,
-            crate::species::SpeciesId::Climber,
+            crate::species::SpeciesId::Fox,
             400.0,
             307.0, // Just below the top (s.y + 8.0 = 308.0)
             0,
@@ -1280,5 +1340,75 @@ mod tests {
     fn config_unused_ok() {
         let _ = SimConfig::default();
         let _ = Personality::default();
+    }
+
+    #[test]
+    fn tortoise_rejects_forbidden_voluntary_behaviours() {
+        use crate::world::WallSide;
+        let mut world = test_world();
+        world.supports.push(Support {
+            id: 2,
+            kind: SupportKind::Window,
+            x1: 200.0,
+            x2: 700.0,
+            y: 700.0,
+            y_bottom: 700.0,
+            monitor: 0,
+            generation: 1,
+            stable: true,
+        });
+        world.supports.push(Support::new_wall(
+            3,
+            WallSide::Left,
+            200.0,
+            500.0,
+            900.0,
+            0,
+            1,
+            true,
+        ));
+        let body = Body {
+            grounded_surface: Some(2),
+            ..Body::new(400.0, 700.0)
+        };
+        let mut ctx = idle_ctx();
+        ctx.species = crate::species::SpeciesId::Tortoise;
+        ctx.personality = ctx.species.default_personality();
+        let drives = Drives {
+            energy: 1.0,
+            boredom: 1.0,
+            curiosity: 1.0,
+            ..Drives::default()
+        };
+        let mut brain = Brain::new(0);
+        let intent = brain.update(2_000, 0.016, &ctx, &body, &world, &drives);
+        assert!(!matches!(
+            brain.state,
+            BehaviourState::Run
+                | BehaviourState::ChaseCursor
+                | BehaviourState::Climbing
+                | BehaviourState::Jumping
+        ));
+        assert!(!matches!(
+            intent.kind,
+            IntentKind::RunTo | IntentKind::JumpTo | IntentKind::ClimbTo
+        ));
+    }
+
+    #[test]
+    fn tortoise_come_here_is_a_walk_command() {
+        let world = test_world();
+        let body = Body {
+            grounded_surface: Some(1),
+            ..Body::new(500.0, 1040.0)
+        };
+        let mut ctx = idle_ctx();
+        ctx.species = crate::species::SpeciesId::Tortoise;
+        ctx.personality = ctx.species.default_personality();
+        let mut brain = Brain::new(0);
+        brain.command = Some(AppCommand::ComeHere { x: 600.0, y: 0.0 });
+        let intent = brain.update(100, 0.016, &ctx, &body, &world, &Drives::default());
+        assert_eq!(brain.state, BehaviourState::Walk);
+        assert_eq!(intent.kind, IntentKind::WalkTo);
     }
 }

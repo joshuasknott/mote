@@ -1,103 +1,81 @@
 # Architecture
 
-## Decision: pure Rust + Win32, no Tauri, no game engine
+## Native Rust application
 
-The brief expresses a preference for Rust + `windows-rs` + Tauri 2, but
-allows a better architecture with a written reason. We chose **pure Rust +
-raw Win32**:
+Mote uses four Rust crates and native Win32 windows. A 256x256 layered window
+per animal handles transparent presentation without a browser or game engine.
+A separate character picker uses GDI text and cached realistic pet portraits.
+The picker is a top-level window: it must not be owned by an overlay because
+hiding that overlay would also hide its owned windows.
 
-- The entire product surface is one 256×256 layered window updated at
-  ~30 fps plus a tray menu. A Chromium/webview runtime (100 MB+, its own GPU
-  process) would dwarf the pet to serve a settings menu with nine toggles.
-- Transparent click-through-except-on-the-pet hit testing, per-pixel alpha,
-  and `UpdateLayeredWindow` positioning are all one native call each. In a
-  webview shell they would be harder, not easier.
-- Idle cost today: one 16 ms timer, a software raster of 65k pixels at
-  30 fps awake / 7 fps asleep, `EnumWindows` only on WinEvent notification
-  (+2 s fallback). Current whole-app RSS needs a new soak measurement. The
-  "physics" is a 2D platformer-lite (gravity, supports, jump arcs) in ~300
-  lines.
+| Crate | Responsibility |
+|---|---|
+| mote-core | deterministic physics, geometry, animal registry, drives and decisions |
+| mote-win | monitor, taskbar, window, cursor, idle, system-load and audio sensing |
+| mote-render | embedded PNG atlases, pose selection, transitions and premultiplied pixels |
+| mote-app | native overlay/picker/tray, message loop, persistence and startup integration |
 
-If a future settings UI outgrows a tray menu, a small Tauri window can be
-added without touching `mote-core`/`mote-win`/`mote-render`.
+## Update and rendering
 
-## Crate map
+The active tick is 32ms. It polls cursor/idle, gates reactions through user
+settings, refreshes native geometry on WinEvents or a two-second recovery
+interval, advances each simulation, updates animation and presents frames.
+CPU/fullscreen sensing runs at about 1Hz; audio sampling at about 10Hz only
+when enabled. All-sleeping packs use a 64ms tick and render every second tick.
+Hidden, picker-open and fullscreen-paused states use 250ms ticks and skip
+simulation and rendering. The slow timer remains available during pause.
 
-```text
-mote-app      Win32 message loop, 16 ms + 1 s timers, wiring
-  ├── overlay.rs   WS_EX_LAYERED window, DIB section, UpdateLayeredWindow blits
-  ├── tray.rs      tray icon (procedurally rendered) + settings menu
-  ├── settings.rs  %APPDATA% persistence + HKCU Run key
-  └── app.rs       per-tick: sense → sim → animate → render → present
-mote-win      environment sensing → plain data (all failures degrade)
-  ├── monitors.rs  EnumDisplayMonitors + GetDpiForMonitor + virtual screen
-  ├── taskbar.rs   SHAppBarMessage(ABM_GETTASKBARPOS/GETSTATE) + tray wnd rect
-  ├── windows.rs   EnumWindows filter (visible, !minimised, !cloaked, …)
-  ├── cursor.rs    smoothed velocity tracker + GetLastInputInfo idle
-  ├── stats.rs     GetSystemTimes CPU deltas + GlobalMemoryStatusEx
-  ├── audio.rs     IAudioMeterInformation peak + playback hysteresis
-  ├── events.rs    SetWinEventHook → atomic generation counter
-  └── world_build.rs  monitors+taskbar+windows → WorldSnapshot
-mote-core     no OS calls; deterministic; unit-tested
-  ├── physics.rs   bodies, gravity, swept landing, support riding/loss, jumps
-  ├── world.rs     supports, queries, jump targeting, edge info
-  ├── behaviour.rs Brain: utility-weighted state machine + cooldowns
-  ├── personality.rs drives + traits (no obligations, never dies)
-  └── lib.rs       CreatureSim::tick — the per-creature step
-mote-render   pose-driven illustrated vector backend
-  ├── anim.rs      Animator: squash spring, blinks, saccades, walk/dance phase
-  ├── creature.rs  shared Pose contract and render regression tests
-  └── art.rs       cached cubic art + pigment grain → premultiplied RGBA
-```
+The desktop world contains taskbar/floor, window tops and optional wall
+supports. Stable support IDs let physics ride moving windows or fall safely
+when support disappears. Species motion traits constrain utility choices:
+tortoises cannot voluntarily jump, climb, run or chase; rabbits and owls hop.
+Physics friction is time-based and jump integration preserves launch velocity.
 
-## Key flows
+`Overlay::present` alone controls overlay position. `set_visible` never moves
+it. The last successful premultiplied frame and origin remain the source of
+truth for alpha hit testing. Explicit click-through uses WS_EX_TRANSPARENT
+so input also passes to windows owned by other processes. No overlay steals
+keyboard focus; the user opens the picker deliberately.
 
-**One tick (16 ms):** poll cursor → tracker; idle; audio @10 Hz; CPU/mem/
-fullscreen @1 Hz; rebuild world if WinEvents fired or 2 s elapsed; gate
-senses by settings; `CreatureSim::tick` (drives → brain intent → physics);
-animator update → pose → raster @30 fps awake / 7 fps asleep; `present(x,y)`
-positions + blits the overlay in one call.
+## Artwork
 
-**Positioning authority:** `Overlay::present(x, y)` is the *only* code that
-moves the window. (`set_visible(true)` uses `SWP_NOMOVE`.) This invariant
-exists because a regression once parked the window at 0,0 via a
-`SetWindowPos(0,0)` hidden inside the show path — see log sentinel
-`UpdateLayeredWindow failed` (warn-once).
+Each animal has an embedded transparent PNG with four columns and two rows:
+stand, walk contact, walk passing, opposite contact, sit, sleep, anticipation,
+leap/stretch. The renderer caches decoded frames and removes detached cell
+spill. Source pose bounds supply foot anchors; rendering produces 256x256
+premultiplied RGBA, which the overlay converts to BGRA for UpdateLayeredWindow.
+The picker uses the same renderer for portraits. No asset lookup depends on
+the checkout, current directory or network. Source prompts live beside the
+atlases in assets/pets/README.md.
 
-**Support invalidation:** physics validates `grounded_surface` every tick
-(moved → ride it; gone → `SupportLost` → fall). World rebuilds bump
-`generation`; supports use HWND-derived ids (taskbar/floor in reserved
-ranges that can't collide).
+The animation is a finite raster pose system with procedural timing and
+movement, not skeletal 3D animation. Validation covers transparency, bounds,
+frame selection, transitions and deterministic playback. The gallery exposes
+all species and poses for visual checks as well as renderer-only timing.
 
-**Event-driven where it matters:** `SetWinEventHook` (object
-destroy→location-change range, minimise range, foreground) bumps an atomic;
-the loop rebuilds lazily. Polling remains for cursor (16 ms, cheap),
-audio (10 Hz), CPU (1 Hz), world fallback (2 s).
+## Selection and persistence
 
-## Determinism & tests
+The picker owns its state and posts WM_APP_PICKER_RESULT to the app. It never
+borrows App or starts a nested message loop. Commit returns the selected
+pets and Quiet/Reduce Motion settings; cancellation leaves saved settings
+unchanged. The app keeps one to four simulations and a shared world snapshot.
 
-`mote-core` and animation take no wall-clock input — time arrives as `dt` /
-`now_ms` parameters, randomness from owned xorshift streams. Tests assert
-repeatability (`run() == run()`), landing/edge/support-loss physics,
-no-flap behaviour budgets, render premultiplication invariants, and sensor
-math (CPU ratio, cursor smoothing, audio hysteresis). OS-touching tests only
-assert crash-freedom and sanity on live Windows.
+Settings retain legacy species/count fields for migration, plus an explicit
+bounded, deduplicated pets list. Former creature IDs deserialize through
+aliases to real species. Startup registration uses --background; a deliberate
+second launch posts WM_APP_OPEN_PICKER to the existing instance. Ctrl+Alt+M
+uses a registered native hotkey, with tray fallback if another app owns it.
 
-## Artwork and interaction
+## Privacy and verification
 
-`art.rs` owns twelve authored path designs plus the Ring-tail nap drawing.
-Paths and pigment grain are cached with `OnceLock`. tiny-skia rasterizes into
-premultiplied RGBA, retaining the existing Win32 DIB upload boundary. Pose
-transforms pivot around the feet at sprite y=206, with a canvas-fit guard for
-large stretched silhouettes. Grain follows art coordinates rather than time.
+No network stack, account, telemetry or audio recording is part of Mote.
+Window information is transient geometry. Local logs reset on startup when
+they exceed 1MB.
+`MOTE_DATA_DIR` isolates settings and logs during acceptance runs.
 
-The app retains each last presented frame and its screen origin for alpha
-hit testing. This makes irregular limbs clickable while holes and empty
-space pass through. Captured drags remain interactive outside the silhouette.
-
-## Multiple Motes
-
-The app holds a collection of per-creature simulations, animators and native
-overlays, stepped against one shared `WorldSnapshot`. The tray selects one
-to four instances; cohort species and cohabitation gaze have regression tests.
-Richer social choreography remains future work.
+Core and animation take explicit time and deterministic random streams.
+Tests cover capability constraints, jump arcs, moving supports, friction,
+settings migration, lineup ordering and renderer invariants. Sensor tests
+cover signal maths and native API failure tolerance. --self-test exercises
+live sensors plus simulation/rendering, but does not establish hardware
+acceptance for mixed DPI, lock/resume, Explorer restart or monitor hotplug.
